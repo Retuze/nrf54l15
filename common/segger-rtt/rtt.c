@@ -118,20 +118,3 @@ uint32_t rtt_read(char *data, uint32_t len)
     down->rd_off = rd;
     return i;
 }
-
-/* picolibc: syscalls.c 中弱符号 board_putc / board_getc，这里提供强实现使 printf/scanf 走 RTT。 */
-int board_putc(int c)
-{
-    char b = (char)(unsigned char)c;
-    rtt_write(&b, 1u);
-    return 0;
-}
-
-int board_getc(void)
-{
-    char c;
-    if (rtt_read(&c, 1u) == 0u) {
-        return -1;
-    }
-    return (int)(unsigned char)c;
-}

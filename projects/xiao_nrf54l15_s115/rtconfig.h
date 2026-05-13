@@ -32,19 +32,7 @@
 #define RT_USING_SMALL_MEM_AS_HEAP
 #define RT_HEAP_SIZE                   (32 * 1024)
 
-/* ---- device framework ------------------------------------------------ */
-#define RT_USING_DEVICE
-#define RT_USING_PIN
-#define RT_USING_SHELL
-
 /* ---- console --------------------------------------------------------- */
 #define RT_CONSOLEBUF_SIZE             128
-
-/* ---- shell ----------------------------------------------------------- */
-#define RT_SHELL_THREAD_STACK_SIZE      2048
-#define RT_SHELL_THREAD_PRIORITY        20
-#define RT_SHELL_CMD_MAX_ARGS           8
-#define RT_SHELL_CMD_MAX_COUNT          16
-#define RT_SHELL_LINE_BUF_SIZE          128
 
 #endif /* RT_CONFIG_H__ */

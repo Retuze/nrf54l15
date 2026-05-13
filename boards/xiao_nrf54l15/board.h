@@ -6,7 +6,8 @@
  * 板载硬件:
  *   USER LED  : P2.00  (低电平有效)
  *   USER KEY  : P0.00  (低电平有效，内部上拉)
- *
+ *   UART TX    : P1.09
+ *   UART RX    : P1.08
  * 排针 (XIAO D0..D15):
  *   D0  P1.04   D8  P2.01
  *   D1  P1.05   D9  P2.04

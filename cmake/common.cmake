@@ -9,6 +9,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Post-build hook: generate .hex, .bin, and size report
 function(nrf_post_build TARGET)
+    set_target_properties(${TARGET} PROPERTIES SUFFIX ".elf")
     add_custom_command(TARGET ${TARGET} POST_BUILD
         COMMAND llvm-objcopy -O ihex   $<TARGET_FILE:${TARGET}> ${TARGET}.hex
         COMMAND llvm-objcopy -O binary $<TARGET_FILE:${TARGET}> ${TARGET}.bin

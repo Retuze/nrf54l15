@@ -24,41 +24,16 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "rtt.h"
+
 #undef errno
 extern int errno;
-
-/* ---- UART hook -----------------------------------------------------------
- *
- * Replace this with a real putchar for your board. Kept weak so a proper
- * driver in another TU can override it.
- */
-__attribute__((weak))
-int board_putc(int c)
-{
-    (void) c;
-    return 0;
-}
-
-__attribute__((weak))
-int board_getc(void)
-{
-    return -1;
-}
-
-/* ---- stdio backends ------------------------------------------------------
- *
- * Depending on picolibc configuration, stdio may resolve to POSIX-style
- * names instead of underscore-prefixed GNU syscall stubs. This template
- * intentionally uses the POSIX spellings.
- */
 
 ssize_t write(int fd, const void *buf, size_t len)
 {
     if (fd == 1 || fd == 2) {
         const char *p = (const char *) buf;
-        for (size_t i = 0; i < len; i++) {
-            board_putc((unsigned char) p[i]);
-        }
+        rtt_write(p, len);
         return (ssize_t) len;
     }
     errno = EBADF;
@@ -69,12 +44,7 @@ ssize_t read(int fd, void *buf, size_t len)
 {
     if (fd == 0) {
         char *p = (char *) buf;
-        for (size_t i = 0; i < len; i++) {
-            int c = board_getc();
-            if (c < 0) return (ssize_t) i;
-            p[i] = (char) c;
-        }
-        return (ssize_t) len;
+        return (ssize_t) rtt_read(p, len);
     }
     errno = EBADF;
     return -1;

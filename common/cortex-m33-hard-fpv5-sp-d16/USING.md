@@ -187,9 +187,6 @@ In addition libc++ `std::chrono::steady_clock` calls through to:
   hardware / RTOS time source
 
 `examples/src/syscalls.c` provides a starter implementation of all of the above.
-It uses weak `board_putc` / `board_getc` hooks as one possible board I/O path,
-but those hooks are just example integration points, not an ABI requirement.
-
 ---
 
 ## 6. What `libcpp_threads.c` has to provide
