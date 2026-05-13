@@ -9,8 +9,9 @@
 #include <stdio.h>
 #include <print>
 #include <thread>
+#include <chrono>
 
-/* ---- thread entry points --------------------------------------------- */
+using namespace std::chrono_literals;
 
 static void app_thread_entry()
 {
@@ -21,12 +22,11 @@ static void app_thread_entry()
     for (;;) {
         board_btn_poll();
         board_led_poll();
-        rt_thread_mdelay(10);
+        std::this_thread::sleep_for(100ms);
     }
 }
 
-/* ---- public entry ---------------------------------------------------- */
-
+// 该函数在线程调度前被调用，请勿在此做除了创建线程以外的操作
 extern "C" void app_init(void)
 {
     std::thread(app_thread_entry).detach();
