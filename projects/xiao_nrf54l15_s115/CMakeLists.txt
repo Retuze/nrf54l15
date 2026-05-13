@@ -39,7 +39,6 @@ set(SOURCES
 
     # Common infrastructure
     ${CMAKE_CURRENT_SOURCE_DIR}/../../common/segger-rtt/rtt.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../common/sys/rtthread_port.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../common/shell/shell.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../common/thread/libcpp_threads.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../common/event_bus/event_bus.c

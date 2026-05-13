@@ -69,6 +69,23 @@ static uint32_t board_tick_ms(void *ctx)
 }
 
 /* ---- Init ------------------------------------------------------------- */
+static rt_uint8_t g_rt_heap[RT_HEAP_SIZE] ALIGN(RT_ALIGN_SIZE);
+
+void SysTick_Handler(void)
+{
+    rt_interrupt_enter();
+    rt_tick_increase();
+    rt_interrupt_leave();
+}
+
+void rt_hw_board_init(void)
+{
+    board_init();
+    rt_system_heap_init(g_rt_heap, g_rt_heap + sizeof(g_rt_heap));
+
+    SystemCoreClockUpdate();
+    SysTick_Config(SystemCoreClock / RT_TICK_PER_SECOND);
+}
 
 /*
  * GRTC initialization is deferred to Phase 2 MPSL/SDC init.
