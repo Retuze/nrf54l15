@@ -15,6 +15,7 @@
 #include "hal_uart.h"
 #include <nrf.h>
 #include "rtt.h"
+#include "shell.h"
 
 /* ---- Onboard LED instance --------------------------------------------- */
 
@@ -60,6 +61,30 @@ void board_btn_set_callbacks(const button_callbacks_t *cbs) { button_set_callbac
 void board_btn_poll(void)            { button_poll(&s_board_btn); }
 bool board_btn_is_pressed(void)      { return button_is_pressed(&s_board_btn); }
 
+/* ---- Shell instance (RTT-backed) --------------------------------------- */
+
+static shell_t g_shell;
+
+static void shell_rtt_output(const void *buf, size_t len)
+{
+    rtt_write((const char *)buf, (uint32_t)len);
+}
+
+shell_t *board_shell_get(void)
+{
+    return &g_shell;
+}
+
+bool board_shell_poll(void)
+{
+    char buf[256];
+    uint32_t n = rtt_read(buf, sizeof(buf));
+    for (uint32_t i = 0; i < n; i++)
+        ringbuf_put(&g_shell.rb, (uint8_t)buf[i]);
+
+    return shell_poll(&g_shell);
+}
+
 /* ---- tick_ms adapter (SysTick via rt_tick_get, 1ms resolution) -------- */
 
 static uint32_t board_tick_ms(void *ctx)
@@ -94,6 +119,7 @@ void rt_hw_board_init(void)
 void board_init(void)
 {
     rtt_init();
+    shell_init(&g_shell, shell_rtt_output);
     hal_uart_init();
 
     /* ---- Onboard LED ------------------------------------------------- */

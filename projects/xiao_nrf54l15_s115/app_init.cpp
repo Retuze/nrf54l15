@@ -1,6 +1,5 @@
 #include "app_led_ctl.h"
 #include "board.h"
-#include "shell.h"
 
 #include <rtthread.h>
 #include <stdio.h>
@@ -16,12 +15,10 @@ static void app_thread_entry()
     std::print("Hello, {}!\n", "C++23");
     std::print("World!\n");
 
-    shell_init();
-
     for (;;) {
         board_btn_poll();
         board_led_poll();
-        shell_poll();
+        board_shell_poll();
         std::this_thread::sleep_for(10ms);
     }
 }

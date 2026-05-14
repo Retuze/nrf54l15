@@ -29,6 +29,7 @@
 #include "hal_gpio.h"
 #include "indicator.h"
 #include "button.h"
+#include "shell.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -83,6 +84,11 @@ bool board_btn_is_pressed(void);
 
 /* 板载 USER KEY 原始读取（true = 按下）。 */
 bool board_user_key_pressed(void);
+
+/* ---- Shell ----------------------------------------------------------- */
+
+shell_t *board_shell_get(void);
+bool board_shell_poll(void);
 
 /* ---- 初始化 ---------------------------------------------------------- */
 

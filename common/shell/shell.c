@@ -1,190 +1,289 @@
 #include "shell.h"
-#include "rtt.h"
-
-#include <rtthread.h>
 #include <string.h>
+#include <stdint.h>
+#include <stdlib.h>
 
-#define SHELL_PROMPT    "~ $ "
-#define SHELL_PROMPT_LEN (sizeof(SHELL_PROMPT) - 1)
+/* ===== output helpers ===== */
 
-/* ---- built-in commands ------------------------------------------------- */
-
-static void shell_cmd_help(int argc, char *argv[])
-{
-    rt_kprintf("available commands:\n");
-    rt_kprintf("  help\n");
+static void shell_write(shell_t *sh, const void *buf, size_t len) {
+    if (sh->output)
+        sh->output(buf, len);
 }
 
-static const shell_cmd_t g_shell_cmds[] = {
-    {"help", "list commands", shell_cmd_help},
-};
+static void shell_writes(shell_t *sh, const char *s) {
+    shell_write(sh, s, strlen(s));
+}
 
-#define SHELL_CMD_COUNT (sizeof(g_shell_cmds) / sizeof(g_shell_cmds[0]))
+/* ===== terminal helpers ===== */
 
-/* ---- instance ---------------------------------------------------------- */
-
-static struct {
-    char line_buf[SHELL_LINE_BUF_SIZE];
-    int  buf_len;
-    int  cursor;
-} g_sh;
-
-/* ---- cursor helpers ---------------------------------------------------- */
-
-/* CSI n D — move cursor left n columns */
-static void shell_cursor_left(int n)
-{
+static void term_cursor_left(shell_t *sh, int n) {
     if (n <= 0) return;
-    char tmp[8];
-    int len = rt_snprintf(tmp, sizeof(tmp), "\x1b[%dD", n);
-    rtt_write(tmp, len);
+    char buf[16];
+    int len = 0;
+    buf[len++] = '\033';
+    buf[len++] = '[';
+    if (n >= 100) { buf[len++] = (char)('0' + n / 100); n %= 100; }
+    if (n >= 10)  { buf[len++] = (char)('0' + n / 10);  n %= 10;  }
+    buf[len++] = (char)('0' + n);
+    buf[len++] = 'D';
+    shell_write(sh, buf, len);
 }
 
-/* redraw from cursor to end of line, then restore cursor */
-static void shell_redraw_suffix(void)
-{
-    if (g_sh.cursor >= g_sh.buf_len) return;
-    int suffix_len = g_sh.buf_len - g_sh.cursor;
-    rtt_write(g_sh.line_buf + g_sh.cursor, suffix_len);
-    shell_cursor_left(suffix_len);
+static void term_cursor_right(shell_t *sh, int n) {
+    if (n <= 0) return;
+    char buf[16];
+    int len = 0;
+    buf[len++] = '\033';
+    buf[len++] = '[';
+    if (n >= 100) { buf[len++] = (char)('0' + n / 100); n %= 100; }
+    if (n >= 10)  { buf[len++] = (char)('0' + n / 10);  n %= 10;  }
+    buf[len++] = (char)('0' + n);
+    buf[len++] = 'C';
+    shell_write(sh, buf, len);
 }
 
-/* full redraw: \r + prompt + line + clear-to-EOL + restore cursor */
-static void shell_redraw_line(void)
-{
-    rtt_write("\r", 1);
-    rtt_write(SHELL_PROMPT, SHELL_PROMPT_LEN);
-    rtt_write(g_sh.line_buf, g_sh.buf_len);
-    rtt_write("\x1b[K", 3);
-    shell_cursor_left(g_sh.buf_len - g_sh.cursor);
+static void term_erase_to_end(shell_t *sh) {
+    shell_writes(sh, "\033[K");
 }
 
-/* ---- insert / delete at cursor ----------------------------------------- */
+/* ===== built-in commands ===== */
 
-static void shell_insert_char(char c)
-{
-    if (g_sh.buf_len >= SHELL_LINE_BUF_SIZE - 1) return;
-
-    for (int i = g_sh.buf_len; i > g_sh.cursor; i--)
-        g_sh.line_buf[i] = g_sh.line_buf[i - 1];
-    g_sh.line_buf[g_sh.cursor] = c;
-    g_sh.buf_len++;
-    g_sh.cursor++;
-
-    shell_redraw_suffix();
+static void cmd_echo(shell_t *sh, int argc, char **argv) {
+    for (int i = 1; i < argc; i++) {
+        if (i > 1) shell_write(sh, " ", 1);
+        shell_writes(sh, argv[i]);
+    }
 }
 
-static void shell_delete_at_cursor(void)
-{
-    if (g_sh.cursor >= g_sh.buf_len) return;
-
-    for (int i = g_sh.cursor; i < g_sh.buf_len - 1; i++)
-        g_sh.line_buf[i] = g_sh.line_buf[i + 1];
-    g_sh.buf_len--;
-
-    rtt_write(g_sh.line_buf + g_sh.cursor, g_sh.buf_len - g_sh.cursor);
-    rtt_write(" ", 1);
-    rtt_write("\x1b[1D", 4);
-    shell_cursor_left(g_sh.buf_len - g_sh.cursor);
+static void cmd_help(shell_t *sh, int argc, char **argv) {
+    (void)argc; (void)argv;
+    shell_writes(sh, "commands:\r\n");
+    for (shell_cmd_t *c = sh->cmd_list; c; c = c->next) {
+        shell_write(sh, "  ", 2);
+        shell_writes(sh, c->name);
+        shell_writes(sh, " - ");
+        shell_writes(sh, c->help);
+        if(c->next!=NULL)
+        {
+            shell_writes(sh, "\r\n");
+        }
+    }
 }
 
-static void shell_backspace_at_cursor(void)
-{
-    if (g_sh.cursor <= 0) return;
+/* ===== incremental line redraw ===== */
 
-    for (int i = g_sh.cursor - 1; i < g_sh.buf_len - 1; i++)
-        g_sh.line_buf[i] = g_sh.line_buf[i + 1];
-    g_sh.buf_len--;
-    g_sh.cursor--;
-    shell_redraw_line();
+static void shell_redraw_tail(shell_t *sh, int from) {
+    int n = sh->line_len - from;
+    if (n > 0)
+        shell_write(sh, &sh->line[from], n);
+    term_erase_to_end(sh);
+
+    int back = sh->line_len - sh->cursor_pos;
+    if (back > 0)
+        term_cursor_left(sh, back);
 }
 
-/* ---- command execution ------------------------------------------------- */
+static void shell_sync_cursor(shell_t *sh, int old_pos) {
+    int delta = sh->cursor_pos - old_pos;
+    if (delta > 0)
+        term_cursor_right(sh, delta);
+    else if (delta < 0)
+        term_cursor_left(sh, -delta);
+}
 
-static void shell_execute(char *line)
-{
-    int argc = 0;
-    char *argv[SHELL_MAX_ARGS];
-    char *p = line;
+/* ===== shell implementation ===== */
 
-    while (*p && argc < SHELL_MAX_ARGS) {
-        while (*p == ' ') p++;
-        if (*p == '\0') break;
-        argv[argc++] = p;
-        while (*p && *p != ' ') p++;
-        if (*p == ' ') *p++ = '\0';
+void shell_init(shell_t *sh, shell_output_fn output) {
+    memset(sh, 0, sizeof(*sh));
+    sh->output = output;
+    ringbuf_init(&sh->rb);
+
+    shell_register(sh, "echo", cmd_echo, "print arguments");
+    shell_register(sh, "help", cmd_help, "show this help");
+}
+
+void shell_deinit(shell_t *sh) {
+    shell_cmd_t *c = sh->cmd_list;
+    while (c) {
+        shell_cmd_t *next = c->next;
+        SHELL_FREE(c);
+        c = next;
+    }
+    sh->cmd_list = NULL;
+}
+
+bool shell_register(shell_t *sh, const char *name, shell_cmd_fn fn, const char *help) {
+    shell_cmd_t *c = (shell_cmd_t *)SHELL_MALLOC(sizeof(shell_cmd_t));
+    if (!c) return false;
+
+    c->name = name;
+    c->fn   = fn;
+    c->help = help;
+    c->next = sh->cmd_list;
+    sh->cmd_list = c;
+    return true;
+}
+
+static void show_prompt(shell_t *sh) {
+    if (!sh->telnet_negotiated) {
+        shell_writes(sh, "\xff\xfb\x01");
+        sh->telnet_negotiated = true;
+    }
+    if (!sh->prompt_visible) {
+        shell_writes(sh, "> ");
+        sh->prompt_visible = true;
+    }
+}
+
+static void execute_line(shell_t *sh) {
+    shell_writes(sh, "\r\n");
+    sh->prompt_visible = false;
+
+    int    argc = 0;
+    char  *argv[SHELL_ARGS_MAX];
+    char  *p    = sh->line;
+    bool   in_token = false;
+
+    for (int i = 0; i < sh->line_len && p[i]; i++) {
+        if (p[i] == ' ' || p[i] == '\t') {
+            p[i] = '\0';
+            in_token = false;
+        } else {
+            if (!in_token) {
+                if (argc < SHELL_ARGS_MAX)
+                    argv[argc++] = &p[i];
+                in_token = true;
+            }
+        }
     }
 
     if (argc == 0) return;
 
-    for (int i = 0; i < (int)SHELL_CMD_COUNT; i++) {
-        if (strcmp(argv[0], g_shell_cmds[i].name) == 0) {
-            g_shell_cmds[i].handler(argc, argv);
+    for (shell_cmd_t *c = sh->cmd_list; c; c = c->next) {
+        if (strcmp(argv[0], c->name) == 0) {
+            c->fn(sh, argc, argv);
             return;
         }
     }
-
-    rt_kprintf("unknown command: %s\n", argv[0]);
+    shell_writes(sh, argv[0]);
+    shell_writes(sh, ": command not found\r");
 }
 
-/* ---- public API -------------------------------------------------------- */
+/* ---- per-character handlers ---- */
 
-void shell_init(void)
-{
-    rtt_write(SHELL_PROMPT, SHELL_PROMPT_LEN);
+static void shell_insert_char(shell_t *sh, char ch) {
+    if (sh->line_len >= SHELL_LINE_MAX - 1) return;
+
+    memmove(&sh->line[sh->cursor_pos + 1],
+            &sh->line[sh->cursor_pos],
+            sh->line_len - sh->cursor_pos);
+    sh->line[sh->cursor_pos] = ch;
+    sh->line_len++;
+    sh->cursor_pos++;
+
+    shell_write(sh, &ch, 1);
+    int tail = sh->line_len - sh->cursor_pos;
+    if (tail > 0) {
+        shell_write(sh, &sh->line[sh->cursor_pos], tail);
+        term_cursor_left(sh, tail);
+    }
 }
 
-void shell_poll(void)
-{
-    char c;
-    while (rtt_read(&c, 1) > 0) {
-        /* ---- escape sequences ---- */
-        if (c == '\x1b') {
-            char seq[4];
-            int  slen = 0;
+static void shell_backspace(shell_t *sh) {
+    if (sh->cursor_pos == 0) return;
 
-            while (slen < 3 && rtt_read(&seq[slen], 1) > 0)
-                slen++;
+    memmove(&sh->line[sh->cursor_pos - 1],
+            &sh->line[sh->cursor_pos],
+            sh->line_len - sh->cursor_pos);
+    sh->line_len--;
+    sh->cursor_pos--;
 
-            if (slen >= 1 && seq[0] == '[') {
-                if (slen >= 2 && seq[1] == 'D') {       /* Left  */
-                    if (g_sh.cursor > 0) {
-                        g_sh.cursor--;
-                        rtt_write("\x1b[1D", 4);
-                    }
-                } else if (slen >= 2 && seq[1] == 'C') {/* Right */
-                    if (g_sh.cursor < g_sh.buf_len) {
-                        g_sh.cursor++;
-                        rtt_write("\x1b[1C", 4);
-                    }
-                } else if (slen >= 3 && seq[1] == '3' && seq[2] == '~') {
-                    /* Delete */
-                    shell_delete_at_cursor();
-                }
-            }
+    shell_writes(sh, "\b");
+    shell_redraw_tail(sh, sh->cursor_pos);
+}
+
+static void shell_delete(shell_t *sh) {
+    if (sh->cursor_pos >= sh->line_len) return;
+
+    memmove(&sh->line[sh->cursor_pos],
+            &sh->line[sh->cursor_pos + 1],
+            sh->line_len - sh->cursor_pos - 1);
+    sh->line_len--;
+
+    shell_redraw_tail(sh, sh->cursor_pos);
+}
+
+static void shell_handle_esc(shell_t *sh, uint8_t key) {
+    switch (key) {
+    case 'K':  /* Left */
+        if (sh->cursor_pos > 0) {
+            int old = sh->cursor_pos;
+            sh->cursor_pos--;
+            shell_sync_cursor(sh, old);
+        }
+        break;
+    case 'M':  /* Right */
+        if (sh->cursor_pos < sh->line_len) {
+            int old = sh->cursor_pos;
+            sh->cursor_pos++;
+            shell_sync_cursor(sh, old);
+        }
+        break;
+    case 'S':  /* Delete */
+        shell_delete(sh);
+        break;
+    case 'G':  /* Home */
+        if (sh->cursor_pos > 0) {
+            int old = sh->cursor_pos;
+            sh->cursor_pos = 0;
+            shell_sync_cursor(sh, old);
+        }
+        break;
+    case 'O':  /* End */
+        if (sh->cursor_pos < sh->line_len) {
+            int old = sh->cursor_pos;
+            sh->cursor_pos = sh->line_len;
+            shell_sync_cursor(sh, old);
+        }
+        break;
+    }
+}
+
+/* ---- main poll ---- */
+
+bool shell_poll(shell_t *sh) {
+    uint8_t ch;
+
+    show_prompt(sh);
+
+    while (ringbuf_get(&sh->rb, &ch)) {
+        if (sh->esc_prefix != 0) {
+            shell_handle_esc(sh, ch);
+            sh->esc_prefix = 0;
             continue;
         }
 
-        /* ---- enter ---- */
-        if (c == '\r' || c == '\n') {
-            rtt_write("\n", 1);
-            g_sh.line_buf[g_sh.buf_len] = '\0';
-            shell_execute(g_sh.line_buf);
-            g_sh.buf_len = 0;
-            g_sh.cursor  = 0;
-            rtt_write(SHELL_PROMPT, SHELL_PROMPT_LEN);
+        if (ch == 0xE0 || ch == 0x00) {
+            sh->esc_prefix = (int)ch;
             continue;
         }
 
-        /* ---- backspace (BS / DEL key) ---- */
-        if (c == '\b' || c == '\x7f') {
-            shell_backspace_at_cursor();
-            continue;
-        }
-
-        /* ---- printable ---- */
-        if (c >= ' ') {
-            shell_insert_char(c);
+        if (ch == '\r' || ch == '\n') {
+            sh->line[sh->line_len] = '\0';
+            execute_line(sh);
+            sh->line_len   = 0;
+            sh->cursor_pos = 0;
+        } else if (ch == 0x03) {
+            shell_writes(sh, "^C\r\n");
+            sh->line_len   = 0;
+            sh->cursor_pos = 0;
+            sh->prompt_visible = false;
+        } else if (ch == 0x08 || ch == 0x7f) {
+            shell_backspace(sh);
+        } else if (ch >= 0x20 && ch < 0x7f) {
+            shell_insert_char(sh, (char)ch);
         }
     }
+
+    return false;
 }

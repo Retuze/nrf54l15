@@ -1,38 +1,50 @@
-/*
- * shell.h - 简易命令行 Shell，基于 Segger RTT I/O。
- *
- * poll 模式：无独立线程，由应用主循环调用 shell_poll() 推进。
- * 实例为内部单例，命令表在 shell.c 内置。
- *
- * 典型用法：
- *   shell_init();
- *   // 每个循环里 shell_poll();
- */
 #ifndef SHELL_H
 #define SHELL_H
 
-#include <stdint.h>
+#include "ringbuf.h"
+#include <stdbool.h>
+#include <stddef.h>
 
-#ifdef __cplusplus
-extern "C" {
+#ifndef SHELL_MALLOC
+#define SHELL_MALLOC(sz)  malloc(sz)
+#endif
+#ifndef SHELL_FREE
+#define SHELL_FREE(ptr)   free(ptr)
 #endif
 
-#define SHELL_LINE_BUF_SIZE 128
-#define SHELL_MAX_ARGS      8
+#define SHELL_LINE_MAX  128
+#define SHELL_ARGS_MAX  8
 
-typedef void (*shell_cmd_handler_t)(int argc, char *argv[]);
+typedef struct shell_cmd shell_cmd_t;
+typedef struct shell     shell_t;
 
-typedef struct {
-    const char           *name;
-    const char           *desc;
-    shell_cmd_handler_t   handler;
-} shell_cmd_t;
+typedef void (*shell_cmd_fn)(shell_t *sh, int argc, char **argv);
+typedef void (*shell_output_fn)(const void *buf, size_t len);
 
-void shell_init(void);
-void shell_poll(void);
+struct shell_cmd {
+    const char   *name;
+    shell_cmd_fn  fn;
+    const char   *help;
+    shell_cmd_t  *next;
+};
 
-#ifdef __cplusplus
-}
+struct shell {
+    shell_output_fn  output;
+    ringbuf_t        rb;
+    shell_cmd_t     *cmd_list;
+
+    char  line[SHELL_LINE_MAX];
+    int   line_len;
+    int   cursor_pos;
+    int   esc_prefix;
+
+    bool  prompt_visible;
+    bool  telnet_negotiated;
+};
+
+void shell_init(shell_t *sh, shell_output_fn output);
+void shell_deinit(shell_t *sh);
+bool shell_register(shell_t *sh, const char *name, shell_cmd_fn fn, const char *help);
+bool shell_poll(shell_t *sh);
+
 #endif
-
-#endif /* SHELL_H */
