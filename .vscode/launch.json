@@ -1,0 +1,26 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug (OpenOCD, No Load)",
+            "type": "cortex-debug",
+            "request": "launch",
+            "servertype": "openocd",
+            "executable": "${workspaceFolder}/build/debug/firmware.elf",
+            "configFiles": [
+                "${workspaceFolder}/boards/xiao_nrf54l15/support/openocd.cfg"
+            ],
+            "runToEntryPoint": "main",
+            "numberOfProcessors": 2,
+            "targetProcessor": 0,
+            "overrideLaunchCommands": [
+                "monitor reset halt",
+                "monitor mww 0x5004b500 0x101"
+            ],
+            "overrideRestartCommands": [
+                "monitor reset halt",
+                "monitor mww 0x5004b500 0x101"
+            ],
+        }
+    ]
+}

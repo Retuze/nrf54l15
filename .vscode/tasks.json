@@ -1,0 +1,102 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build Debug",
+            "type": "shell",
+            "command": "cmake",
+            "args": [
+                "--workflow",
+                "--preset",
+                "debug"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}/projects/xiao_nrf54l15_s115"
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": "$gcc",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "Flash Debug",
+            "type": "shell",
+            "command": "openocd",
+            "args": [
+                "-f",
+                "boards/xiao_nrf54l15/support/openocd.cfg",
+                "-c",
+                "init; halt",
+                "-c",
+                "nrf54l-load build/debug/firmware.elf",
+                "-c",
+                "nrf54l-verify build/debug/firmware.elf",
+                "-c",
+                "reset run; shutdown"
+            ],
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "Build & Flash Debug",
+            "dependsOn": [
+                "Build Debug",
+                "Flash Debug"
+            ],
+            "dependsOrder": "sequence",
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "openocd-rtt",
+            "type": "shell",
+            "command": "openocd",
+            "args": [
+                "-f", "boards/xiao_nrf54l15/support/openocd.cfg",
+                "-c", "init;reset run",
+                "-c", "nrf54l-rtt"
+            ],
+            "isBackground": true,
+            "problemMatcher": {
+                "pattern": {
+                    "regexp": "^(.*)$",
+                    "file": 1,
+                    "location": 2,
+                    "message": 3
+                },
+                "background": {
+                    "beginsPattern": "^.*Open.*$",
+                    "endsPattern": "^.*4444.*$"
+                }
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated"
+            },
+            "hide": true
+        },
+        {
+            "label": "rtt-log",
+            "type": "shell",
+            "command": "telnet",
+            "args": ["127.0.0.1", "9090"],
+            "dependsOn": "openocd-rtt",
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "new"
+            },
+        }
+    ]
+}
