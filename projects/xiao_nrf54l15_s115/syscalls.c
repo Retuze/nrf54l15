@@ -7,12 +7,14 @@
 #include <unistd.h>
 
 #include "rtt.h"
+#include "hal_uart.h"
 #include <rtthread.h>
 
 ssize_t write(int fd, const void *buf, size_t len)
 {
     if (fd == 1 || fd == 2) {
         rtt_write((const char *)buf, (uint32_t)len);
+        serialWrite((const uint8_t *)buf, len);
         return (ssize_t)len;
     }
     errno = EBADF;

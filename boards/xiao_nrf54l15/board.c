@@ -12,8 +12,10 @@
 #include <rtthread.h>
 #include "hal_delay.h"
 #include "hal_gpio.h"
+#include "hal_pwm.h"
 #include "hal_uart.h"
 #include <nrf.h>
+#include <stdio.h>
 #include "rtt.h"
 #include "shell.h"
 
@@ -24,6 +26,8 @@ static led_indicator_t s_board_led;
 static void board_led_set_on(void *ctx, bool on)
 {
     (void)ctx;
+    analogWriteRelease(LED_PIN);
+    pinMode(LED_PIN, OUTPUT);
 #if LED_ACTIVE_LOW
     digitalWrite(LED_PIN, on ? LOW : HIGH);
 #else
@@ -34,12 +38,17 @@ static void board_led_set_on(void *ctx, bool on)
 static void board_led_set_pwm(void *ctx, uint8_t duty)
 {
     (void)ctx;
-    /* TODO: 硬件 PWM 驱动就绪后替换为真正的 analogWrite */
-    /* 当前回退：duty >= 128 视为亮，否则灭 */
 #if LED_ACTIVE_LOW
-    digitalWrite(LED_PIN, (duty >= 128u) ? LOW : HIGH);
+    if(duty>=128)
+    {
+        digitalWrite(LED_PIN, LOW);
+    }
+    else {
+        digitalWrite(LED_PIN, HIGH);
+    }
+    // analogWrite(LED_PIN, 255 - duty);
 #else
-    digitalWrite(LED_PIN, (duty >= 128u) ? HIGH : LOW);
+    analogWrite(LED_PIN, duty);
 #endif
 }
 
@@ -106,6 +115,13 @@ static uint32_t board_tick_ms(void *ctx)
     return rt_tick_get();
 }
 
+
+void rt_hw_console_output(const char *str)
+{
+    extern ssize_t write(int fd, const void *buf, size_t len);
+    write(1,str, (uint32_t)rt_strlen(str));
+}
+
 /* ---- Init ------------------------------------------------------------- */
 static rt_uint8_t g_rt_heap[RT_HEAP_SIZE] ALIGN(RT_ALIGN_SIZE);
 
@@ -133,7 +149,7 @@ void board_init(void)
 {
     rtt_init();
     shell_init(&g_shell, shell_rtt_output);
-    hal_uart_init();
+    serialBegin(115200);
 
     /* ---- Onboard LED ------------------------------------------------- */
     pinMode(LED_PIN, OUTPUT);

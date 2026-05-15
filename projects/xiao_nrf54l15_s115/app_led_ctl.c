@@ -6,10 +6,10 @@
  *   pri  5  长按反馈：100ms 闪 3 次                  [start() 触发]
  *   pri 10  单击反馈：100ms 闪 1 次                  [start() 触发]
  *   pri 10  双击反馈：100ms 闪 2 次                  [start() 触发]
+ *   pri 12  充电中：慢呼吸 1.5s/1.5s，FOREVER        [recover: g_charging]
  *   pri 15  低电量：快闪 3 次 + 停 2s，FOREVER       [recover: g_low_battery]
  *   pri 20  BLE 未连接：500ms 心跳，FOREVER           [recover: !g_ble_connected]
  *   pri 30  BLE 已连接：按 BLE 写入值控制 LED，FOREVER [recover: g_ble_connected]
- *   pri 180 充电中：慢呼吸 1.5s/1.5s，FOREVER        [recover: g_charging]
  *   pri 190 退出充电：100ms 闪 2 次                  [start() 触发]
  *   pri 250 休眠：2s 慢闪，FOREVER                   [recover: g_sleeping]
  */
@@ -189,9 +189,9 @@ void app_led_ctl_init(void)
         .recover = rv_low_battery,
     });
 
-    /* 充电中：慢呼吸，custom。 */
+    /* 充电中：慢呼吸，custom。优先级高于 BLE 未连接(20)。 */
     id_charging = led_indicator_register(led(), &(led_pattern_cfg_t){
-        .priority = 180, .on_ms = 0, .off_ms = 0,
+        .priority = 12, .on_ms = 0, .off_ms = 0,
         .rep = LED_INDICATOR_REP_FOREVER,
         .custom = breathing_cb, .cus_state = &s_breathing,
         .recover = rv_charging,
@@ -234,6 +234,9 @@ void app_led_ctl_init(void)
         .on_click_timeout = on_click_timeout,
         .on_long_press    = on_long_press,
     });
+
+    /* 开机后设为充电状态，展示 PWM 呼吸灯效果。 */
+    app_led_ctl_set_charging(true);
 }
 
 /* ---- 按键回调 -------------------------------------------------------- */

@@ -43,6 +43,11 @@ extern "C" {
 #define KEY_PIN         PIN_P0(0)
 #define KEY_ACTIVE_LOW  1
 
+/* ---- UART ------------------------------------------------------------ */
+
+#define UART_TX_PIN  PIN_P1(9)
+#define UART_RX_PIN  PIN_P1(8)
+
 /* ---- 排针 ------------------------------------------------------------ */
 
 #define D0   PIN_P1(4)

@@ -30,6 +30,7 @@ extern "C" {
 
 /* ---- Critical sections (RT-Thread-aware) ---- */
 #include <rtthread.h>
+#include <rthw.h>
 
 #define NRFX_CRITICAL_SECTION_ENTER() \
     do { rt_base_t __nrfx_crit = rt_hw_interrupt_disable()
