@@ -71,6 +71,7 @@ led_indicator_t *board_led_get(void);
 void board_led_on(void);
 void board_led_off(void);
 void board_led_set(bool on);
+void board_led_pwm(uint8_t duty);
 
 /* 每周期 poll（驱动内置 FSM 和自定义回调）。 */
 void board_led_poll(void);

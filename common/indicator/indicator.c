@@ -195,12 +195,6 @@ void led_indicator_set_recover(led_indicator_t *h, led_pattern_id_t id,
     h->p[id].recover = fn;
 }
 
-void led_indicator_raw_set(led_indicator_t *h, bool on)
-{
-    if (h == NULL) return;
-    phy_set(h, on);
-}
-
 bool led_indicator_is_idle(const led_indicator_t *h)
 {
     return (h == NULL) || (h->active == LED_PATTERN_NONE);

@@ -31,10 +31,23 @@ static void board_led_set_on(void *ctx, bool on)
 #endif
 }
 
+static void board_led_set_pwm(void *ctx, uint8_t duty)
+{
+    (void)ctx;
+    /* TODO: 硬件 PWM 驱动就绪后替换为真正的 analogWrite */
+    /* 当前回退：duty >= 128 视为亮，否则灭 */
+#if LED_ACTIVE_LOW
+    digitalWrite(LED_PIN, (duty >= 128u) ? LOW : HIGH);
+#else
+    digitalWrite(LED_PIN, (duty >= 128u) ? HIGH : LOW);
+#endif
+}
+
 led_indicator_t *board_led_get(void) { return &s_board_led; }
-void board_led_on(void)              { led_indicator_raw_on(&s_board_led); }
-void board_led_off(void)             { led_indicator_raw_off(&s_board_led); }
-void board_led_set(bool on)          { led_indicator_raw_set(&s_board_led, on); }
+void board_led_on(void)              { if (s_board_led.cfg.set_on) s_board_led.cfg.set_on(s_board_led.cfg.ctx, true); }
+void board_led_off(void)             { if (s_board_led.cfg.set_on) s_board_led.cfg.set_on(s_board_led.cfg.ctx, false); }
+void board_led_set(bool on)          { if (s_board_led.cfg.set_on) s_board_led.cfg.set_on(s_board_led.cfg.ctx, on); }
+void board_led_pwm(uint8_t duty)     { if (s_board_led.cfg.set_pwm) s_board_led.cfg.set_pwm(s_board_led.cfg.ctx, duty); }
 void board_led_poll(void)            { led_indicator_poll(&s_board_led); }
 
 /* ---- Onboard button instance ------------------------------------------ */
@@ -127,6 +140,7 @@ void board_init(void)
 
     led_indicator_cfg_t led_cfg = {
         .set_on  = board_led_set_on,
+        .set_pwm = board_led_set_pwm,
         .tick_ms = board_tick_ms,
         .ctx     = NULL,
     };

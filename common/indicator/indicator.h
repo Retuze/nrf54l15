@@ -13,7 +13,8 @@
  *     有限 rep 跑完自动停；FOREVER 每个周期末尾检查 recover，
  *     返回 false 则退出。
  *
- * 板级移植：只需提供 set_on(ctx, bool) + tick_ms(ctx) 两个回调。
+ * 板级移植：提供 set_on(ctx, bool) + set_pwm(ctx, duty) + tick_ms(ctx) 三个回调。
+ * set_pwm 为可选项（NULL = 不支持 PWM，custom 回调回退到 set_on 阈值判断）。
  */
 #ifndef INDICATOR_H
 #define INDICATOR_H
@@ -43,6 +44,7 @@ typedef bool (*led_indicator_recover_fn)(void);
 
 typedef struct {
     void     (*set_on)(void *ctx, bool on);
+    void     (*set_pwm)(void *ctx, uint8_t duty); /* optional, NULL = PWM not supported */
     uint32_t (*tick_ms)(void *ctx);
     void      *ctx;
 } led_indicator_cfg_t;
@@ -98,11 +100,6 @@ void led_indicator_stop_all(led_indicator_t *h);
 
 /* 每周期调用：推进 FSM/custom + 选举下一个 eligible pattern。 */
 void led_indicator_poll(led_indicator_t *h);
-
-/* 直接写 LED（绕过灯语系统）。 */
-void led_indicator_raw_set(led_indicator_t *h, bool on);
-static inline void led_indicator_raw_on(led_indicator_t *h)  { led_indicator_raw_set(h, true); }
-static inline void led_indicator_raw_off(led_indicator_t *h) { led_indicator_raw_set(h, false); }
 
 bool led_indicator_is_idle(const led_indicator_t *h);
 led_pattern_id_t led_indicator_active(const led_indicator_t *h);
