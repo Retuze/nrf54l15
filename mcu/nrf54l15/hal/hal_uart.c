@@ -30,7 +30,6 @@ static nrf_uarte_baudrate_t map_baud(uint32_t baud)
 
 void serialBegin(uint32_t baud)
 {
-    return;
     nrfx_uarte_config_t cfg = NRFX_UARTE_DEFAULT_CONFIG(UART_TX_PIN, UART_RX_PIN);
     cfg.baudrate = map_baud(baud);
     cfg.tx_cache.p_buffer = g_tx_cache;
@@ -41,6 +40,5 @@ void serialBegin(uint32_t baud)
 
 void serialWrite(const uint8_t *buf, size_t len)
 {
-    return;
     nrfx_uarte_tx(&g_uarte, buf, len, 0);
 }

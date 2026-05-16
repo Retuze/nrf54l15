@@ -39,6 +39,7 @@ extern "C" {
     rt_hw_interrupt_enable(__nrfx_crit); } while (0)
 
 /* ---- Delay (DWT-based, Cortex-M33 has DWT) ---- */
+#include <soc/nrfx_coredep.h>
 #define NRFX_DELAY_DWT_BASED 1
 #define NRFX_DELAY_US(us_time) nrfx_coredep_delay_us(us_time)
 

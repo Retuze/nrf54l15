@@ -14,6 +14,7 @@
 #include "hal_gpio.h"
 #include "hal_pwm.h"
 #include "hal_uart.h"
+#include <nrfx_power.h>
 #include <nrf.h>
 #include <stdio.h>
 #include "rtt.h"
@@ -39,14 +40,7 @@ static void board_led_set_pwm(void *ctx, uint8_t duty)
 {
     (void)ctx;
 #if LED_ACTIVE_LOW
-    if(duty>=128)
-    {
-        digitalWrite(LED_PIN, LOW);
-    }
-    else {
-        digitalWrite(LED_PIN, HIGH);
-    }
-    // analogWrite(LED_PIN, 255 - duty);
+    analogWrite(LED_PIN, 255 - duty);
 #else
     analogWrite(LED_PIN, duty);
 #endif
@@ -147,6 +141,9 @@ void rt_hw_board_init(void)
  */
 void board_init(void)
 {
+    nrfx_power_config_t pwr_cfg = { .dcdcen = true };
+    nrfx_power_init(&pwr_cfg);
+
     rtt_init();
     shell_init(&g_shell, shell_rtt_output);
     serialBegin(115200);

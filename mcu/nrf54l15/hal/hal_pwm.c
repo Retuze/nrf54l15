@@ -41,7 +41,6 @@ static void pwm_hw_init(void)
 
 void analogWrite(uint32_t pin, int duty)
 {
-    return;
     if (!g_initialized) {
         g_pin = pin;
         pwm_hw_init();
@@ -59,7 +58,6 @@ void analogWrite(uint32_t pin, int duty)
 
 void analogWriteRelease(uint32_t pin)
 {
-    return;
     (void)pin;
     if (!g_initialized) return;
     nrfx_pwm_stop(&g_pwm, true);

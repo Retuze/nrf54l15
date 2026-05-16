@@ -230,6 +230,12 @@ typedef enum {
   #pragma clang diagnostic ignored "-Wreserved-id-macro"
   #pragma clang diagnostic ignored "-Wgnu-anonymous-struct"
   #pragma clang diagnostic ignored "-Wnested-anon-types"
+#elif defined (__clang__)
+  #pragma clang diagnostic push
+  #pragma clang diagnostic ignored "-Wc11-extensions"
+  #pragma clang diagnostic ignored "-Wreserved-id-macro"
+  #pragma clang diagnostic ignored "-Wgnu-anonymous-struct"
+  #pragma clang diagnostic ignored "-Wnested-anon-types"
 #elif defined (__GNUC__)
   /* anonymous unions are enabled by default */
 #elif defined (__TMS470__)
@@ -321,6 +327,8 @@ typedef enum {
 #elif defined (__ICCARM__)
   /* leave anonymous unions enabled */
 #elif defined(__ARMCC_VERSION) && (__ARMCC_VERSION >= 6010050)
+  #pragma clang diagnostic pop
+#elif defined (__clang__)
   #pragma clang diagnostic pop
 #elif defined (__GNUC__)
   /* anonymous unions are enabled by default */

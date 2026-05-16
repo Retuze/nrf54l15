@@ -55,12 +55,14 @@ set(SOURCES
     ${NRFX_LOCAL}/nrfx/drivers/src/nrfx_clock.c
     ${NRFX_LOCAL}/nrfx/drivers/src/nrfx_power.c
     ${NRFX_LOCAL}/nrfx/drivers/src/nrfx_uarte.c
+    ${NRFX_LOCAL}/nrfx/drivers/src/nrfx_pwm.c
     ${NRFX_LOCAL}/nrfx/drivers/src/nrfx_gpiote.c
 
     # Project HAL wrappers
     ${NRFX_LOCAL}/hal/hal_gpio.c
     ${NRFX_LOCAL}/hal/hal_delay.c
     ${NRFX_LOCAL}/hal/hal_uart.c
+    ${NRFX_LOCAL}/hal/hal_pwm.c
 
     # Startup
     ${CMAKE_CURRENT_SOURCE_DIR}/startup/startup_nrf54l15.c
@@ -107,7 +109,13 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 target_compile_definitions(${PROJECT_NAME} PRIVATE
     NRF54L15_XXAA
     NRF_APPLICATION
-
+    NRFX_POWER_ENABLED=1
+    NRFX_CLOCK_ENABLED=1
+    NRFX_PWM_ENABLED=1
+    NRFX_PWM20_ENABLED=1
+    NRFX_UARTE_ENABLED=1
+    NRFX_UARTE20_ENABLED=1
+    NRF_CONFIG_CPU_FREQ_MHZ=128
 )
 
 # ---- Compile options ---------------------------------------------------

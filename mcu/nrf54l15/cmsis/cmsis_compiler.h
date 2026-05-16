@@ -48,6 +48,12 @@
 
 
 /*
+ * LLVM/Clang Compiler (GCC-compatible)
+ */
+#elif defined ( __clang__ )
+  #include "cmsis_gcc.h"
+
+/*
  * GNU Compiler
  */
 #elif defined ( __GNUC__ )

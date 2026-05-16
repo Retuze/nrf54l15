@@ -130,7 +130,7 @@ nrfx_err_t nrfx_power_init(nrfx_power_config_t const * p_config)
     nrf_power_dcdcen_set(NRF_POWER, p_config->dcdcen);
 #elif defined(REGULATORS_PRESENT)
     nrf_regulators_vreg_enable_set(NRF_REGULATORS, NRF_REGULATORS_VREG_MAIN, p_config->dcdcen);
-#if !defined(NRF_TRUSTZONE_NONSECURE)
+#if !defined(NRF_TRUSTZONE_NONSECURE) && (defined(NRF5340_XXAA_APPLICATION) || defined(NRF5340_XXAA_NETWORK))
     if (p_config->dcdcen && nrf53_errata_53())
     {
         *((volatile uint32_t *)0x50004728ul) = 0x1;
