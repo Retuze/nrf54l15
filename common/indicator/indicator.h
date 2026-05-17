@@ -27,7 +27,7 @@ extern "C" {
 #endif
 
 #define LED_INDICATOR_REP_FOREVER  0xFFFFFFFFu
-#define LED_INDICATOR_MAX_PATTERNS 8
+#define LED_INDICATOR_MAX_PATTERNS 12
 #define LED_PATTERN_NONE           0xFF
 
 typedef uint8_t led_pattern_id_t;

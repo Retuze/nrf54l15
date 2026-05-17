@@ -77,6 +77,14 @@ static void deactivate(led_indicator_t *h)
     phy_set(h, false);
 }
 
+static void handoff(led_indicator_t *h, led_pattern_id_t nxt)
+{
+    deactivate(h);
+    if (nxt != LED_PATTERN_NONE) {
+        activate(h, nxt);
+    }
+}
+
 /* ---- FSM 步进 -------------------------------------------------------- */
 
 static void fsm_tick(led_indicator_t *h, const led_pattern_cfg_t *p)
@@ -104,18 +112,14 @@ static void fsm_tick(led_indicator_t *h, const led_pattern_cfg_t *p)
         /* 递减 rep（FOREVER 不减）。 */
         if (p->rep != LED_INDICATOR_REP_FOREVER && h->cnt > 0u) --h->cnt;
         if (h->cnt == 0u) {
-            deactivate(h);
-            led_pattern_id_t nxt = find_best(h);
-            if (nxt != LED_PATTERN_NONE) activate(h, nxt);
+            handoff(h, find_best(h));
             return;
         }
 
         /* FOREVER：检查 recover 是否仍想运行。 */
         if (p->rep == LED_INDICATOR_REP_FOREVER) {
             if (p->recover != NULL && !p->recover()) {
-                deactivate(h);
-                led_pattern_id_t nxt = find_best(h);
-                if (nxt != LED_PATTERN_NONE) activate(h, nxt);
+                handoff(h, find_best(h));
                 return;
             }
         }
@@ -176,9 +180,7 @@ void led_indicator_stop(led_indicator_t *h, led_pattern_id_t id)
     if (h == NULL || id >= h->p_count) return;
 
     if (h->active == id) {
-        deactivate(h);
-        led_pattern_id_t nxt = find_best(h);
-        if (nxt != LED_PATTERN_NONE) activate(h, nxt);
+        handoff(h, find_best(h));
     }
 }
 
@@ -206,6 +208,19 @@ led_pattern_id_t led_indicator_active(const led_indicator_t *h)
     return h->active;
 }
 
+static void try_preempt(led_indicator_t *h)
+{
+    if (h->active == LED_PATTERN_NONE) {
+        return;
+    }
+
+    led_pattern_id_t nxt = find_best(h);
+    if (nxt != LED_PATTERN_NONE
+        && h->p[nxt].priority < h->p[h->active].priority) {
+        handoff(h, nxt);
+    }
+}
+
 /* ---- poll ------------------------------------------------------------ */
 
 void led_indicator_poll(led_indicator_t *h)
@@ -221,9 +236,7 @@ void led_indicator_poll(led_indicator_t *h)
 
     /* 已耗尽（防御）。 */
     if (h->cnt == 0u && h->p[h->active].rep != LED_INDICATOR_REP_FOREVER) {
-        deactivate(h);
-        led_pattern_id_t nxt = find_best(h);
-        if (nxt != LED_PATTERN_NONE) activate(h, nxt);
+        handoff(h, find_best(h));
         return;
     }
 
@@ -237,26 +250,26 @@ void led_indicator_poll(led_indicator_t *h)
         uint32_t d = p->custom(h, &h->p[h->active].cus_state);
         if (d != 0u) {
             h->cus_due = now + d;
+            try_preempt(h);
             return;
         }
 
         /* 回调返回 0：本轮结束。 */
         if (p->rep != LED_INDICATOR_REP_FOREVER && h->cnt > 0u) --h->cnt;
         if (h->cnt == 0u) {
-            deactivate(h);
-            led_pattern_id_t nxt = find_best(h);
-            if (nxt != LED_PATTERN_NONE) activate(h, nxt);
+            handoff(h, find_best(h));
             return;
         }
 
         /* FOREVER：检查 recover，false 则退出。 */
         if (p->rep == LED_INDICATOR_REP_FOREVER) {
             if (p->recover != NULL && !p->recover()) {
-                deactivate(h);
-                led_pattern_id_t nxt = find_best(h);
-                if (nxt != LED_PATTERN_NONE) activate(h, nxt);
+                handoff(h, find_best(h));
                 return;
             }
+            /* 勿将 cus_due 置 0，否则下一 poll 会以 10ms 节拍狂调 custom */
+            h->cus_due = now + 1u;
+            return;
         }
         h->cus_due = 0u;
         return;
@@ -264,14 +277,5 @@ void led_indicator_poll(led_indicator_t *h)
 
     /* FSM 路径。 */
     fsm_tick(h, p);
-
-    /* 检查是否有更高优先级 pattern 想抢占。 */
-    if (h->active != LED_PATTERN_NONE) {
-        led_pattern_id_t nxt = find_best(h);
-        if (nxt != LED_PATTERN_NONE
-            && h->p[nxt].priority < h->p[h->active].priority) {
-            deactivate(h);
-            activate(h, nxt);
-        }
-    }
+    try_preempt(h);
 }

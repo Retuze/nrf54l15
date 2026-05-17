@@ -2,7 +2,6 @@
 #include "board.h"
 
 #include <rtthread.h>
-#include <stdio.h>
 #include <print>
 #include <thread>
 #include <chrono>

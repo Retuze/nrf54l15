@@ -22,6 +22,9 @@ extern void     _start(void) __attribute__((noreturn));
 
 void Default_Handler(void) { while (1) { __asm volatile("nop"); } }
 
+/* Board / driver ISRs (must appear in g_pfnVectors — linker does not fill the table) */
+extern void CLOCK_POWER_IRQHandler(void);
+extern void TIMER20_IRQHandler(void);
 /* ---- System / fault handlers ------------------------------------------ */
 
 void Reset_Handler(void) __attribute__((noreturn));
@@ -63,9 +66,11 @@ const irq_handler_t g_pfnVectors[285] = {
     [14] = PendSV_Handler,
     [15] = SysTick_Handler,
 
-    /* Remaining IRQ slots default to Default_Handler.
-     * MPSL/SDC provide strong ISR symbols (TIMER10, GRTC_3, RADIO_0, etc.)
-     * which override weak aliases at link time. */
+    /* Device IRQs used in Phase 1 (unset slots stay 0 — do not enable IRQ without an entry) */
+    [16 + TIMER20_IRQn]      = TIMER20_IRQHandler,      /* P2.00 软件 PWM（无 GPIOTE） */
+    [16 + CLOCK_POWER_IRQn]  = CLOCK_POWER_IRQHandler,  /* nrfx clock / power */
+
+    /* MPSL/SDC (Phase 2): add [16 + TIMER10_IRQn], [16 + GRTC_3_IRQn], etc. when linked */
 };
 
 __attribute__((noreturn))

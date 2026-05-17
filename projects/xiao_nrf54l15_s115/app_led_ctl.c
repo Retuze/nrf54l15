@@ -6,7 +6,7 @@
  *   pri  5  长按反馈：100ms 闪 3 次                  [start() 触发]
  *   pri 10  单击反馈：100ms 闪 1 次                  [start() 触发]
  *   pri 10  双击反馈：100ms 闪 2 次                  [start() 触发]
- *   pri 12  充电中：慢呼吸 1.5s/1.5s，FOREVER        [recover: g_charging]
+ *   pri 12  充电中：慢呼吸 ~2.5s/半周期，FOREVER       [recover: g_charging]
  *   pri 15  低电量：快闪 3 次 + 停 2s，FOREVER       [recover: g_low_battery]
  *   pri 20  BLE 未连接：500ms 心跳，FOREVER           [recover: !g_ble_connected]
  *   pri 30  BLE 已连接：按 BLE 写入值控制 LED，FOREVER [recover: g_ble_connected]
@@ -15,7 +15,9 @@
  */
 #include "app_led_ctl.h"
 #include <stddef.h>
+#include <stdio.h>
 #include "board.h"
+#include "rtt.h"
 #include "button.h"
 #include "event_bus.h"
 #include "hal_delay.h"
@@ -44,6 +46,60 @@ static led_pattern_id_t id_charging;
 static led_pattern_id_t id_exit_charging;
 static led_pattern_id_t id_sleep;
 
+/* 1：RTT 打印按键→灯语（排查完改 0） */
+#define APP_LED_CTL_LOG  1
+
+#if APP_LED_CTL_LOG
+static const char *pat_tag(led_pattern_id_t id)
+{
+    if (id == LED_PATTERN_NONE) return "none";
+    if (id == id_click_single) return "single";
+    if (id == id_click_double) return "double";
+    if (id == id_long_press) return "long";
+    if (id == id_charging) return "charging";
+    if (id == id_startup) return "startup";
+    return "?";
+}
+
+static void led_ctl_start(const char *evt, uint16_t click_cnt, led_pattern_id_t id)
+{
+    led_indicator_t *  h      = led();
+    led_pattern_id_t   before = led_indicator_active(h);
+    const uint32_t     pri_b  = (before != LED_PATTERN_NONE) ? h->p[before].priority : 99u;
+    const uint32_t     pri_r  = h->p[id].priority;
+
+    led_indicator_start(h, id);
+
+    const led_pattern_id_t after = led_indicator_active(h);
+    const char *           res;
+    if (after == id) {
+        res = "ok";
+    } else if (before != LED_PATTERN_NONE && pri_r > pri_b) {
+        res = "block_pri";
+    } else {
+        res = "no_start";
+    }
+
+    char buf[140];
+    int  n = snprintf(buf, sizeof(buf),
+                      "[led_ctl] %s cnt=%u req=%s(%u) pri_req=%u "
+                      "act_before=%s(%u,pri%u) act_after=%s(%u) %s\r\n",
+                      evt, (unsigned)click_cnt, pat_tag(id), (unsigned)id,
+                      (unsigned)pri_r, pat_tag(before), (unsigned)before, (unsigned)pri_b,
+                      pat_tag(after), (unsigned)after, res);
+    if (n > 0) {
+        rtt_write(buf, (uint32_t)n);
+    }
+}
+#else
+static void led_ctl_start(const char *evt, uint16_t click_cnt, led_pattern_id_t id)
+{
+    (void)evt;
+    (void)click_cnt;
+    led_indicator_start(led(), id);
+}
+#endif
+
 /* ---- recover 判定 ---------------------------------------------------- */
 
 static bool rv_ble_disconnected(void) { return !g_ble_connected; }
@@ -63,31 +119,49 @@ static uint32_t ble_connected_cb(led_indicator_t *h, void **state)
 
 /* ---- 充电呼吸灯 ------------------------------------------------------ */
 
-typedef struct { int16_t brightness; int8_t dir; uint32_t tick; } breathing_t;
+/* 步进间隔（indicator cus_due；10ms/级 → 半周期 ~2.5s，poll 10ms） */
+#define BREATH_STEP_MS  10u
+
+typedef struct { int16_t brightness; int8_t dir; } breathing_t;
 static breathing_t s_breathing;
 
 static uint32_t breathing_cb(led_indicator_t *h, void **state)
 {
     breathing_t *bs = (breathing_t *)(*state);
-    if (bs == NULL) return 0u;
+    if (bs == NULL) {
+        return 0u;
+    }
 
-    uint32_t now     = millis();
-    uint32_t elapsed = (uint32_t)(now - bs->tick);
+    if (h->cus_due == 0u) {
+        bs->brightness = 0;
+        bs->dir        = 1;
+        if (h->cfg.set_pwm) {
+            h->cfg.set_pwm(h->cfg.ctx, 0u);
+        } else if (h->cfg.set_on) {
+            h->cfg.set_on(h->cfg.ctx, false);
+        }
+        return BREATH_STEP_MS;
+    }
 
-    /* 每步 ~6ms，256 级，完整呼吸周期约 3s */
-    if (elapsed < 6u) return 6u - elapsed;
-
+    /* 三角波 0↔255 */
     bs->brightness += bs->dir;
-    if (bs->brightness >= 255) { bs->brightness = 255; bs->dir = -1; }
-    else if (bs->brightness <= 0) { bs->brightness = 0; bs->dir = 1; }
+    if (bs->brightness >= 255) {
+        bs->brightness = 255;
+        bs->dir        = -1;
+    } else if (bs->brightness <= 0) {
+        bs->brightness = 0;
+        bs->dir        = 1;
+    }
 
-    if (h->cfg.set_pwm)
-        h->cfg.set_pwm(h->cfg.ctx, (uint8_t)bs->brightness);
-    else
-        h->cfg.set_on(h->cfg.ctx, bs->brightness >= 128);
+    uint8_t pwm = (uint8_t)bs->brightness;
 
-    bs->tick = now;
-    return 6u;
+    if (h->cfg.set_pwm) {
+        h->cfg.set_pwm(h->cfg.ctx, pwm);
+    } else if (h->cfg.set_on) {
+        h->cfg.set_on(h->cfg.ctx, pwm >= 128);
+    }
+
+    return BREATH_STEP_MS;
 }
 
 /* ---- 低电量：快闪 3 次 + 停 2s --------------------------------------- */
@@ -157,10 +231,26 @@ static void on_lbs_led_write(const event_t *evt)
         g_ble_led_state = (*(const uint8_t *)evt->data) != 0;
 }
 
+static void on_charging_event(const event_t *evt)
+{
+    switch (evt->id) {
+    case EVENT_CHARGING_IN:
+        app_led_ctl_set_charging(true);
+        break;
+    case EVENT_CHARGING_OUT:
+        app_led_ctl_set_charging(false);
+        break;
+    default:
+        break;
+    }
+}
+
 /* ---- 灯语注册 -------------------------------------------------------- */
 
 void app_led_ctl_init(void)
 {
+    s_breathing.brightness = 0;
+    s_breathing.dir        = 1;
     /* 开机：常亮 3s，最高优先级不可抢占。 */
     id_startup = led_indicator_register(led(), &(led_pattern_cfg_t){
         .priority = 1, .on_ms = 3000, .off_ms = 0, .rep = 1,
@@ -223,10 +313,25 @@ void app_led_ctl_init(void)
         .priority = 5, .on_ms = 100, .off_ms = 100, .rep = 3,
     });
 
+#if APP_LED_CTL_LOG
+    {
+        char buf[80];
+        int  n = snprintf(buf, sizeof(buf),
+                          "[led_ctl] reg single=%u double=%u long=%u (max=%u)\r\n",
+                          (unsigned)id_click_single, (unsigned)id_click_double,
+                          (unsigned)id_long_press, (unsigned)LED_INDICATOR_MAX_PATTERNS);
+        if (n > 0) {
+            rtt_write(buf, (uint32_t)n);
+        }
+    }
+#endif
+
     /* 订阅事件。 */
     event_bus_subscribe(EVENT_BLE_CONNECTED,    on_ble_event);
     event_bus_subscribe(EVENT_BLE_DISCONNECTED, on_ble_event);
     event_bus_subscribe(EVENT_LBS_LED_WRITE,    on_lbs_led_write);
+    event_bus_subscribe(EVENT_CHARGING_IN,  on_charging_event);
+    event_bus_subscribe(EVENT_CHARGING_OUT, on_charging_event);
 
     board_btn_set_callbacks(&(button_callbacks_t){
         .on_click         = on_click_single,
@@ -235,16 +340,37 @@ void app_led_ctl_init(void)
         .on_long_press    = on_long_press,
     });
 
-    /* 开机后设为充电状态，展示 PWM 呼吸灯效果。 */
-    app_led_ctl_set_charging(true);
+    /* 验证：模拟接入充电（有充电检测后改由检测模块 emit） */
+    event_bus_emit(EVENT_CHARGING_IN, NULL, 0);
 }
 
 /* ---- 按键回调 -------------------------------------------------------- */
 
-void on_click_single(void)      { led_indicator_start(led(), id_click_single); }
-void on_multi_click(uint16_t c) { (void)c; led_indicator_start(led(), id_click_single); }
-void on_long_press(void)        { led_indicator_start(led(), id_long_press); }
-void on_click_timeout(uint16_t c) { if (c == 2u) led_indicator_start(led(), id_click_double); }
+/* 单击/双击在多击窗口结束后由 on_click_timeout 判定，避免每按一次就闪 single。 */
+void on_click_single(void) { (void)0; }
+
+void on_multi_click(uint16_t c) { (void)c; }
+
+void on_long_press(void) { led_ctl_start("long_press", 0u, id_long_press); }
+
+void on_click_timeout(uint16_t c)
+{
+    if (c == 1u) {
+        led_ctl_start("timeout_1", c, id_click_single);
+    } else if (c == 2u) {
+        led_ctl_start("timeout_2", c, id_click_double);
+    }
+#if APP_LED_CTL_LOG
+    else {
+        char buf[48];
+        int  n = snprintf(buf, sizeof(buf), "[led_ctl] timeout cnt=%u (ignore)\r\n",
+                          (unsigned)c);
+        if (n > 0) {
+            rtt_write(buf, (uint32_t)n);
+        }
+    }
+#endif
+}
 
 /* ---- 系统状态 -------------------------------------------------------- */
 

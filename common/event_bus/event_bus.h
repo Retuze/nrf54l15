@@ -34,6 +34,9 @@ typedef enum {
     EVENT_LBS_LED_WRITE,      /* LBS LED characteristic written */
     EVENT_LBS_BUTTON_NOTIFY,  /* LBS button notification sent */
 
+    EVENT_CHARGING_IN,        /* USB/充电器接入 */
+    EVENT_CHARGING_OUT,       /* USB/充电器拔出 */
+
     EVENT_SYSTEM_PM_ENTER,    /* entering low-power */
     EVENT_SYSTEM_PM_EXIT,     /* exiting low-power */
 
