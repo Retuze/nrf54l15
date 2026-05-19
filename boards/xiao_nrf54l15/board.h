@@ -106,12 +106,10 @@ bool board_user_key_pressed(void);
 shell_t *board_shell_get(void);
 bool board_shell_poll(void);
 
-/* ---- I2S 正弦波输出 -------------------------------------------------- */
+/* ---- Opus 音频播放 (I2S TX-only, D2/SDOUT) --------------------------- */
 
-/* 初始化 I2S 并启动连续正弦波输出 + 回环接收校验 (16-bit, 15.625 kHz 采样率).
- * 需先用杜邦线连接 D2(SDOUT) → D4(SDIN). */
-void board_i2s_loopback_start(void);
-void board_i2s_stop(void);
+void board_opus_play_start(void);
+void board_opus_play_stop(void);
 
 /* 初始化 SD 卡 (SPI 模式, D6-D9). */
 void board_sd_init(void);

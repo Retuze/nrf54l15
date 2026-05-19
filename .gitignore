@@ -2,3 +2,13 @@
 build
 compile_commands.json
 logs/
+
+# ---- Opus -----------------------------------------------------------
+# PC 验证工程产物
+common/opus/build_pc/
+# M33 移植验证工程产物
+common/opus/build_port/
+# 预编译的验证/测试工具
+common/opus/port/*.exe
+# 音频生成脚本临时文件
+common/opus/tools/_gen_*

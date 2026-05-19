@@ -37,6 +37,9 @@ set(SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/../../common/rt-thread/libcpu/arm/cortex-m33/trustzone.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../common/rt-thread/libcpu/arm/cortex-m33/context_gcc.S
 
+    # Opus player
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../common/opus/opus_player.c
+
     # Common infrastructure
     ${CMAKE_CURRENT_SOURCE_DIR}/../../common/segger-rtt/rtt.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../common/shell/shell.c
@@ -78,7 +81,11 @@ set(SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/syscalls.c
 )
 
+add_subdirectory(../../common/opus opus_build)
+
 add_executable(${PROJECT_NAME} ${SOURCES})
+
+target_link_libraries(${PROJECT_NAME} PRIVATE opus_cm33)
 
 # ---- Include paths -----------------------------------------------------
 # System headers (libc++, nrfx)
@@ -103,6 +110,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../../common/event_bus
     ${CMAKE_CURRENT_SOURCE_DIR}/../../common/indicator
     ${CMAKE_CURRENT_SOURCE_DIR}/../../common/button
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../common/opus
     ${CMAKE_CURRENT_SOURCE_DIR}/../../boards/xiao_nrf54l15
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
