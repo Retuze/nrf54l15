@@ -1,6 +1,8 @@
 #include <errno.h>
+#include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <time.h>
@@ -9,6 +11,7 @@
 #include "rtt.h"
 #include "hal_uart.h"
 #include <rtthread.h>
+#include <rthw.h>
 
 ssize_t write(int fd, const void *buf, size_t len)
 {
@@ -104,4 +107,28 @@ void _exit(int status)
 {
     (void)status;
     for (;;) { }
+}
+
+/* ---- RT-Thread print forwarding to libc --------------------------------
+ * rt_vsnprintf / rt_kprintf are RT_WEAK in kservice.c → safe to override.
+ * rt_snprintf / rt_sprintf are strong in kservice.c → delegate to
+ * rt_vsnprintf which we've already replaced, so no override needed.
+ */
+
+int rt_vsnprintf(char *buf, rt_size_t size, const char *fmt, va_list args)
+{
+    return vsnprintf(buf, (size_t)size, fmt, args);
+}
+
+int rt_kprintf(const char *fmt, ...)
+{
+    va_list args;
+    static char rt_log_buf[256];
+
+    va_start(args, fmt);
+    int n = vsnprintf(rt_log_buf, sizeof(rt_log_buf), fmt, args);
+    va_end(args);
+
+    rt_hw_console_output(rt_log_buf);
+    return n;
 }

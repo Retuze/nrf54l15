@@ -17,7 +17,9 @@
 #include <hal/nrf_timer.h>
 #include <nrfx_power.h>
 #include <nrfx_power_clock.h>
+#include <nrfx_i2s.h>
 #include <nrf.h>
+#include <math.h>
 #include "rtt.h"
 #include "shell.h"
 
@@ -299,4 +301,197 @@ void board_init(void)
         .ctx          = NULL,
     };
     button_init(&s_board_btn, &btn_cfg);
+
+    /* ---- I2S loopback test -------------------------------------------- */
+    board_i2s_loopback_start();
+}
+
+/* ---- I2S 回环测试 (Full-Duplex TX+RX) ---------------------------------- */
+
+/*
+ * I2S 配置 (Master, Full-Duplex):
+ *   格式: I2S, 16-bit, left-aligned, left channel
+ *   MCK:  4 MHz   (32MDIV8)
+ *   LRCK: 4 MHz / 256 = 15.625 kHz (≈16 kHz 采样率)
+ *   SCK:  LRCK × 32 = 500 kHz
+ *
+ * 引脚:
+ *   D0 / P1.04 → SCK
+ *   D1 / P1.05 → LRCK
+ *   D2 / P1.06 → SDOUT  (TX)
+ *   D3 / P1.07 → MCK
+ *   D4 / P1.10 → SDIN   (RX) ← 用杜邦线连接 D2(SDOUT) → D4(SDIN)
+ *
+ * DMA 双缓冲 ping-pong, 每缓冲 256 samples.
+ * 每完成一次传输比对 TX/RX 数据, 累计误码并周期打印.
+ */
+#define I2S_SINE_TABLE_SIZE 256u
+#define I2S_BUF_WORDS       I2S_SINE_TABLE_SIZE
+#define I2S_LOG_INTERVAL    64u  /* 每 64 次回调打印一次统计 */
+#define I2S_DBG_DUMP_COUNT   1u   /* 前 N 次回调打印 TX/RX hex dump */
+
+static nrfx_i2s_t  g_i2s = NRFX_I2S_INSTANCE(20);
+static int16_t     g_sine_table[I2S_SINE_TABLE_SIZE];
+
+/* TX 双缓冲 */
+static uint32_t g_i2s_tx_a[I2S_BUF_WORDS] __attribute__((aligned(4)));
+static uint32_t g_i2s_tx_b[I2S_BUF_WORDS] __attribute__((aligned(4)));
+/* RX 双缓冲 */
+static uint32_t g_i2s_rx_a[I2S_BUF_WORDS] __attribute__((aligned(4)));
+static uint32_t g_i2s_rx_b[I2S_BUF_WORDS] __attribute__((aligned(4)));
+
+static volatile bool g_i2s_running;
+
+/* 回环统计 */
+static volatile uint32_t g_i2s_cb_count;    /* 回调计数 */
+static volatile uint32_t g_i2s_mismatches;  /* 累计误码 word 数 */
+static volatile uint32_t g_i2s_total_words; /* 累计传输 word 数 */
+
+static void i2s_fill_buffer(uint32_t *buf)
+{
+    for (uint16_t i = 0; i < I2S_BUF_WORDS; i++) {
+        buf[i] = ((uint32_t)(uint16_t)g_sine_table[i]) << 16;
+    }
+}
+
+static void i2s_data_handler(nrfx_i2s_buffers_t const *p_released,
+                             uint32_t                   status)
+{
+    if (status & NRFX_I2S_STATUS_TRANSFER_STOPPED) {
+        g_i2s_running = false;
+        return;
+    }
+
+    /* 比对刚完成的 TX/RX 数据
+     * I2S Full-Duplex 有 1 frame 固有延迟: TX[N] → RX[N+1].
+     * 比对 TX[0..N-2] ↔ RX[1..N-1], 忽略 RX[0] (初值 0) 和 TX[N-1] (无对应 RX). */
+    if (p_released && p_released->p_tx_buffer && p_released->p_rx_buffer) {
+        #define I2S_CMP_COUNT (I2S_BUF_WORDS - 1)
+        uint32_t local_mismatch = 0;
+        for (uint16_t i = 0; i < I2S_CMP_COUNT; i++) {
+            if (p_released->p_tx_buffer[i] != p_released->p_rx_buffer[i + 1]) {
+                local_mismatch++;
+            }
+        }
+        g_i2s_mismatches += local_mismatch;
+        g_i2s_total_words += I2S_CMP_COUNT;
+        g_i2s_cb_count++;
+
+        /* 首次传输完成: 打印 TX/RX 前 20 words 的 hex dump，便于诊断 */
+        if (g_i2s_cb_count <= I2S_DBG_DUMP_COUNT) {
+            rt_kprintf("I2S cb#%u: TX[0..19] =",
+                       (unsigned)g_i2s_cb_count);
+            for (uint8_t j = 0; j < 20; j++) {
+                rt_kprintf(" %08lX", p_released->p_tx_buffer[j]);
+            }
+            rt_kprintf("\n             RX[0..19] =");
+            for (uint8_t j = 0; j < 20; j++) {
+                rt_kprintf(" %08lX", p_released->p_rx_buffer[j]);
+            }
+            rt_kprintf("\n             mismatches=%u/%u (offset=1)\n",
+                       (unsigned)local_mismatch, (unsigned)I2S_CMP_COUNT);
+        }
+
+        if ((g_i2s_cb_count % I2S_LOG_INTERVAL) == 0) {
+            uint32_t ber_milli = g_i2s_total_words
+                ? (uint32_t)((uint64_t)g_i2s_mismatches * 100000 / g_i2s_total_words)
+                : 0;
+            rt_kprintf("I2S loopback: %u/%u words BER=%u.%03u%%\n",
+                       (unsigned)g_i2s_mismatches,
+                       (unsigned)g_i2s_total_words,
+                       (unsigned)(ber_milli / 1000),
+                       (unsigned)(ber_milli % 1000));
+        }
+    } else if (!p_released) {
+        g_i2s_cb_count++;
+    }
+
+    /* 乒乓切换: 将刚释放的 buffer 重新提交 */
+    const uint32_t *next_tx;
+    uint32_t       *next_rx;
+
+    if (p_released && p_released->p_tx_buffer) {
+        next_tx = p_released->p_tx_buffer;
+        next_rx = (p_released->p_tx_buffer == g_i2s_tx_a)
+                  ? g_i2s_rx_a : g_i2s_rx_b;
+    } else {
+        /* 首次回调: 提交 B 组 buffer */
+        next_tx = g_i2s_tx_b;
+        next_rx = g_i2s_rx_b;
+    }
+
+    nrfx_i2s_buffers_t next = {
+        .p_tx_buffer = next_tx,
+        .p_rx_buffer = next_rx,
+        .buffer_size = I2S_BUF_WORDS,
+    };
+    nrfx_i2s_next_buffers_set(&g_i2s, &next);
+}
+
+void board_i2s_loopback_start(void)
+{
+    if (g_i2s_running) return;
+
+    /* 生成正弦查找表 (16-bit signed, full swing) */
+    for (uint16_t i = 0; i < I2S_SINE_TABLE_SIZE; i++) {
+        double phase = 2.0 * 3.141592653589793 * (double)i / (double)I2S_SINE_TABLE_SIZE;
+        g_sine_table[i] = (int16_t)(sin(phase) * 32767.0);
+    }
+
+    /* 预填充 TX 双缓冲, RX 缓冲清零 */
+    i2s_fill_buffer(g_i2s_tx_a);
+    i2s_fill_buffer(g_i2s_tx_b);
+    for (uint16_t i = 0; i < I2S_BUF_WORDS; i++) {
+        g_i2s_rx_a[i] = 0;
+        g_i2s_rx_b[i] = 0;
+    }
+
+    nrfx_i2s_config_t cfg = NRFX_I2S_DEFAULT_CONFIG(
+        I2S_SCK_PIN,
+        I2S_LRCK_PIN,
+        I2S_MCK_PIN,
+        I2S_SDOUT_PIN,
+        I2S_SDIN_PIN
+    );
+    cfg.sample_width = NRF_I2S_SWIDTH_16BIT;
+    cfg.alignment    = NRF_I2S_ALIGN_LEFT;
+    cfg.channels     = NRF_I2S_CHANNELS_LEFT;
+    cfg.mck_setup    = NRF_I2S_MCK_32MDIV8;
+    cfg.ratio        = NRF_I2S_RATIO_256X;
+    cfg.irq_priority = 6;
+
+    nrfx_err_t err = nrfx_i2s_init(&g_i2s, &cfg, i2s_data_handler);
+    if (err != NRFX_SUCCESS) {
+        rt_kprintf("I2S loopback init failed: %u\n", (unsigned)err);
+        return;
+    }
+
+    g_i2s_cb_count    = 0;
+    g_i2s_mismatches  = 0;
+    g_i2s_total_words = 0;
+
+    nrfx_i2s_buffers_t initial = {
+        .p_tx_buffer = g_i2s_tx_a,
+        .p_rx_buffer = g_i2s_rx_a,
+        .buffer_size = I2S_BUF_WORDS,
+    };
+    err = nrfx_i2s_start(&g_i2s, &initial, 0);
+    if (err != NRFX_SUCCESS) {
+        rt_kprintf("I2S loopback start failed: %u\n", (unsigned)err);
+        return;
+    }
+
+    g_i2s_running = true;
+    rt_kprintf("I2S loopback started: LRCK=15.625kHz Full-Duplex\n");
+    rt_kprintf("  Connect D2(SDOUT) -> D4(SDIN) with a jumper wire\n");
+    rt_kprintf("  SCK=D0 LRCK=D1 SDOUT=D2 MCK=D3 SDIN=D4\n");
+}
+
+void board_i2s_stop(void)
+{
+    if (!g_i2s_running) return;
+    nrfx_i2s_stop(&g_i2s);
+    g_i2s_running = false;
+    rt_kprintf("I2S loopback stopped: total %u words, %u mismatches\n",
+               (unsigned)g_i2s_total_words, (unsigned)g_i2s_mismatches);
 }

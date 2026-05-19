@@ -67,6 +67,14 @@ extern "C" {
 #define D14  PIN_P2(9)
 #define D15  PIN_P2(6)
 
+/* ---- I2S (D0-D3 on header, contiguous, logic-analyzer friendly) ---- */
+
+#define I2S_SCK_PIN   PIN_P1(4)   /* D0 */
+#define I2S_LRCK_PIN  PIN_P1(5)   /* D1 */
+#define I2S_SDOUT_PIN PIN_P1(6)   /* D2 */
+#define I2S_MCK_PIN   PIN_P1(7)   /* D3 */
+#define I2S_SDIN_PIN  PIN_P1(10)  /* D4 — 回环测试: 用杜邦线将 D2(SDOUT) 连到 D4(SDIN) */
+
 /* ---- 板载 LED -------------------------------------------------------- */
 
 /* 获取实例指针，供注册 pattern / start / stop 等高级操作。 */
@@ -89,6 +97,13 @@ bool board_user_key_pressed(void);
 
 shell_t *board_shell_get(void);
 bool board_shell_poll(void);
+
+/* ---- I2S 正弦波输出 -------------------------------------------------- */
+
+/* 初始化 I2S 并启动连续正弦波输出 + 回环接收校验 (16-bit, 15.625 kHz 采样率).
+ * 需先用杜邦线连接 D2(SDOUT) → D4(SDIN). */
+void board_i2s_loopback_start(void);
+void board_i2s_stop(void);
 
 /* ---- 初始化 ---------------------------------------------------------- */
 

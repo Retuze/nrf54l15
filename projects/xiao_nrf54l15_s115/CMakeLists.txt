@@ -57,6 +57,7 @@ set(SOURCES
     ${NRFX_LOCAL}/nrfx/drivers/src/nrfx_uarte.c
     ${NRFX_LOCAL}/nrfx/drivers/src/nrfx_pwm.c
     ${NRFX_LOCAL}/nrfx/drivers/src/nrfx_gpiote.c
+    ${NRFX_LOCAL}/nrfx/drivers/src/nrfx_i2s.c
 
     # Project HAL wrappers
     ${NRFX_LOCAL}/hal/hal_gpio.c
@@ -115,6 +116,8 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
     NRFX_PWM20_ENABLED=1
     NRFX_UARTE_ENABLED=1
     NRFX_UARTE20_ENABLED=1
+    NRFX_I2S_ENABLED=1
+    NRFX_I2S20_ENABLED=1
     NRF_CONFIG_CPU_FREQ_MHZ=128
 )
 
