@@ -64,6 +64,7 @@ set(SOURCES
     ${NRFX_LOCAL}/hal/hal_delay.c
     ${NRFX_LOCAL}/hal/hal_uart.c
     ${NRFX_LOCAL}/hal/hal_pwm.c
+    ${NRFX_LOCAL}/hal/hal_sd.c
 
     # Startup
     ${CMAKE_CURRENT_SOURCE_DIR}/startup/startup_nrf54l15.c

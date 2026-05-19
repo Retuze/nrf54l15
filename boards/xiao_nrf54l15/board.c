@@ -302,8 +302,24 @@ void board_init(void)
     };
     button_init(&s_board_btn, &btn_cfg);
 
+    /* ---- SD card ---------------------------------------------------- */
+    board_sd_init();
+
     /* ---- I2S loopback test -------------------------------------------- */
     board_i2s_loopback_start();
+}
+
+/* ---- SD 卡初始化 ------------------------------------------------------- */
+
+void board_sd_init(void)
+{
+    sd_err_t err = sd_init();
+    if (err == SD_OK) {
+        sd_get_info();
+    } else {
+        rt_kprintf("SD: init failed (err=%d) — check wiring D6=SCK D7=MOSI D8=MISO D9=CS\n",
+                   (int)err);
+    }
 }
 
 /* ---- I2S 回环测试 (Full-Duplex TX+RX) ---------------------------------- */

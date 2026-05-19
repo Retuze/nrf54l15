@@ -27,6 +27,7 @@
 #define BOARD_H
 
 #include "hal_gpio.h"
+#include "hal_sd.h"
 #include "indicator.h"
 #include "button.h"
 #include "shell.h"
@@ -75,6 +76,13 @@ extern "C" {
 #define I2S_MCK_PIN   PIN_P1(7)   /* D3 */
 #define I2S_SDIN_PIN  PIN_P1(10)  /* D4 — 回环测试: 用杜邦线将 D2(SDOUT) 连到 D4(SDIN) */
 
+/* ---- SD 卡 SPI (D6-D9) ------------------------------------------------ */
+
+#define SD_SCK_PIN    PIN_P2(8)   /* D6 */
+#define SD_MOSI_PIN   PIN_P2(7)   /* D7 */
+#define SD_MISO_PIN   PIN_P2(1)   /* D8 */
+#define SD_CS_PIN     PIN_P2(4)   /* D9 */
+
 /* ---- 板载 LED -------------------------------------------------------- */
 
 /* 获取实例指针，供注册 pattern / start / stop 等高级操作。 */
@@ -104,6 +112,9 @@ bool board_shell_poll(void);
  * 需先用杜邦线连接 D2(SDOUT) → D4(SDIN). */
 void board_i2s_loopback_start(void);
 void board_i2s_stop(void);
+
+/* 初始化 SD 卡 (SPI 模式, D6-D9). */
+void board_sd_init(void);
 
 /* ---- 初始化 ---------------------------------------------------------- */
 
