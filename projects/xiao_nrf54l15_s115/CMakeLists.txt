@@ -40,6 +40,8 @@ set(SOURCES
     # Opus
     ${CMAKE_CURRENT_SOURCE_DIR}/../../common/opus/opus_player.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../common/opus/opus_loopback.c
+    # Raw PCM test player (no Opus, verify I2S output)
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../common/opus/raw_pcm_player.c
 
     # Common infrastructure
     ${CMAKE_CURRENT_SOURCE_DIR}/../../common/segger-rtt/rtt.c
