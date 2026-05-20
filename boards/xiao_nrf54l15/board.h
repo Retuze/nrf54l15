@@ -111,6 +111,9 @@ bool board_shell_poll(void);
 void board_opus_play_start(void);
 void board_opus_play_stop(void);
 
+/* ---- Opus 正弦编解码回环测试 ------------------------------------------- */
+void board_opus_loopback_start(void);
+
 /* 初始化 SD 卡 (SPI 模式, D6-D9). */
 void board_sd_init(void);
 

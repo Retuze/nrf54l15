@@ -37,8 +37,9 @@ set(SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/../../common/rt-thread/libcpu/arm/cortex-m33/trustzone.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../common/rt-thread/libcpu/arm/cortex-m33/context_gcc.S
 
-    # Opus player
+    # Opus
     ${CMAKE_CURRENT_SOURCE_DIR}/../../common/opus/opus_player.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../common/opus/opus_loopback.c
 
     # Common infrastructure
     ${CMAKE_CURRENT_SOURCE_DIR}/../../common/segger-rtt/rtt.c

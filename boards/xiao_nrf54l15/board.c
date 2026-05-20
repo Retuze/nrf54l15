@@ -18,6 +18,7 @@
 #include <nrfx_power.h>
 #include <nrfx_power_clock.h>
 #include "opus_player.h"
+#include "opus_loopback.h"
 #include <nrf.h>
 #include <math.h>
 #include "rtt.h"
@@ -305,6 +306,9 @@ void board_init(void)
     /* ---- SD card ---------------------------------------------------- */
     board_sd_init();
 
+    /* ---- Opus loopback test (one-shot, prints RTT) --------------- */
+    board_opus_loopback_start();
+
     /* ---- Opus audio playback --------------------------------------- */
     board_opus_play_start();
 }
@@ -332,4 +336,9 @@ void board_opus_play_start(void)
 void board_opus_play_stop(void)
 {
     opus_player_stop();
+}
+
+void board_opus_loopback_start(void)
+{
+    opus_loopback_start();
 }
