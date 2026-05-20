@@ -52,15 +52,19 @@ static void loopback_thread_entry(void *arg)
     rt_kprintf("Version: %s\n", opus_get_version_string());
 
     /* --- Init --- */
+    rt_kprintf("opuslb: enc init start...\n");
     OpusEncoder *enc = (OpusEncoder *)s_enc_buf;
     err = opus_encoder_init(enc, TEST_SAMPLE_RATE, 1, OPUS_APPLICATION_VOIP);
     if (err != OPUS_OK) { rt_kprintf("FAIL: enc init: %d\n", err); return; }
+    rt_kprintf("opuslb: enc init ok\n");
     opus_encoder_ctl(enc, OPUS_SET_BITRATE(24000));
     opus_encoder_ctl(enc, OPUS_SET_COMPLEXITY(5));
 
+    rt_kprintf("opuslb: dec init start...\n");
     OpusDecoder *dec = (OpusDecoder *)s_dec_buf;
     err = opus_decoder_init(dec, TEST_SAMPLE_RATE, 1);
     if (err != OPUS_OK) { rt_kprintf("FAIL: dec init: %d\n", err); return; }
+    rt_kprintf("opuslb: dec init ok\n");
 
     /* --- Encode→decode interleaved (one frame at a time) -------------- */
     unsigned long enc_checksum = 0;

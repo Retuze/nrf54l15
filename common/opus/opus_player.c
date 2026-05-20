@@ -137,7 +137,7 @@ static void i2s_tx_handler(nrfx_i2s_buffers_t const *p_released, uint32_t status
  * ======================================================================== */
 
 /* Static thread stack — avoids heap allocation from the 32 KB kernel heap. */
-static rt_uint8_t __attribute__((aligned(8))) s_decode_stack[8192];
+static rt_uint8_t __attribute__((aligned(8))) s_decode_stack[12288]; /* 12 KB */
 static struct rt_thread s_decode_thread;
 
 static void decode_thread_entry(void *arg)
