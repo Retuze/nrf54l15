@@ -30,7 +30,7 @@ static unsigned char s_packet[TEST_MAX_PACKET];
 static int  s_sizes[TEST_FRAMES];   /* 50 × 4 = 200 bytes */
 
 /* ---- Thread ----------------------------------------------------------- */
-static rt_uint8_t __attribute__((aligned(8))) s_thread_stack[16384];
+static rt_uint8_t __attribute__((aligned(8))) s_thread_stack[20480]; /* 20 KB — 编码器 VLA */
 static struct rt_thread s_thread;
 
 static void gen_sine(float *pcm, int n, float freq, float fs)
