@@ -24,7 +24,7 @@ MEMORY
 __app_ram_start = ORIGIN(RAM);
 __app_ram_end   = ORIGIN(RAM) + LENGTH(RAM);
 
-__heap_min   = 0xC000;   /* 48 KB heap — Opus encoder scratch allocs */
+__heap_min   = 0x4000;   /* 16 KB heap — libc++ internal use; Opus uses rt_malloc */
 __stack_size = 0x2000;   /*  8 KB main stack */
 
 ENTRY(Reset_Handler)

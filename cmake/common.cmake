@@ -55,6 +55,10 @@ function(nrf_link_libraries TARGET LINKER_SCRIPT)
     target_link_options(${TARGET} PRIVATE
         -fuse-ld=lld -nostdlib -nostdlib++ -nostartfiles
         -Wl,--gc-sections
+        -Wl,--wrap=malloc
+        -Wl,--wrap=free
+        -Wl,--wrap=realloc
+        -Wl,--wrap=calloc
         -T${LINKER_SCRIPT}
         -Wl,-Map=${TARGET}.map
         -Wl,--print-memory-usage

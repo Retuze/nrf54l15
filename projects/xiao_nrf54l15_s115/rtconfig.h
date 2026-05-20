@@ -30,7 +30,7 @@
 #define RT_USING_HEAP
 #define RT_USING_SMALL_MEM
 #define RT_USING_SMALL_MEM_AS_HEAP
-#define RT_HEAP_SIZE                   (32 * 1024)
+#define RT_HEAP_SIZE                   (64 * 1024)
 
 /* ---- console --------------------------------------------------------- */
 #define RT_CONSOLEBUF_SIZE             128

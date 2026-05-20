@@ -109,6 +109,36 @@ void _exit(int status)
     for (;;) { }
 }
 
+/* ---- malloc / free → RT-Thread heap (thread-safe) ------------------------
+ * Using ld --wrap so that Opus encoder/decoder scratch allocations are
+ * redirected from picolibc's non-thread-safe malloc to RT-Thread's rt_malloc.
+ * See CMakeLists.txt for -Wl,--wrap=malloc etc.
+ */
+#include <string.h>
+
+void *__wrap_malloc(size_t size)
+{
+    return rt_malloc((rt_size_t)size);
+}
+
+void __wrap_free(void *ptr)
+{
+    rt_free(ptr);
+}
+
+void *__wrap_realloc(void *ptr, size_t size)
+{
+    return rt_realloc(ptr, (rt_size_t)size);
+}
+
+void *__wrap_calloc(size_t nmemb, size_t size)
+{
+    size_t total = nmemb * size;
+    void *p = rt_malloc((rt_size_t)total);
+    if (p) memset(p, 0, total);
+    return p;
+}
+
 /* ---- RT-Thread print forwarding to libc --------------------------------
  * rt_vsnprintf / rt_kprintf are RT_WEAK in kservice.c → safe to override.
  * rt_snprintf / rt_sprintf are strong in kservice.c → delegate to
