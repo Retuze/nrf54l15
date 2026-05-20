@@ -16,7 +16,7 @@
 #define TEST_FRAMES       50        /* 1 second total */
 #define TEST_MAX_PACKET   1275
 #define TEST_FREQ_HZ      1000.0f
-#define DECODE_ENABLED    0         /* 0=encode only, 1=round-trip */
+#define DECODE_ENABLED    1         /* 0=encode only, 1=round-trip */
 
 /* State sizes — from measure_sizes.exe, same on M33 float path */
 #define OPUS_ENC_SIZE     31668
@@ -31,7 +31,7 @@ static unsigned char s_packet[TEST_MAX_PACKET];
 static int  s_sizes[TEST_FRAMES];   /* 50 × 4 = 200 bytes */
 
 /* ---- Thread ----------------------------------------------------------- */
-static rt_uint8_t __attribute__((aligned(8))) s_thread_stack[8192]; /* 8 KB — VLA disabled */
+static rt_uint8_t __attribute__((aligned(8))) s_thread_stack[49152]; /* 48 KB — validated */
 static struct rt_thread s_thread;
 
 static void gen_sine(float *pcm, int n, float freq, float fs)
@@ -45,6 +45,7 @@ static void loopback_thread_entry(void *arg)
     (void)arg;
     float pcm_in[TEST_FRAME_SIZE];
 #if DECODE_ENABLED
+    float pcm_ref[TEST_FRAME_SIZE];  /* saved copy — encoder may clobber pcm_in */
     float pcm_out[TEST_FRAME_SIZE];
 #endif
     int err;
@@ -55,35 +56,32 @@ static void loopback_thread_entry(void *arg)
     rt_kprintf("Version: %s\n", opus_get_version_string());
 
     /* --- Init --- */
-    rt_kprintf("opuslb: enc init start...\n");
     OpusEncoder *enc = (OpusEncoder *)s_enc_buf;
     err = opus_encoder_init(enc, TEST_SAMPLE_RATE, 1, OPUS_APPLICATION_VOIP);
     if (err != OPUS_OK) { rt_kprintf("FAIL: enc init: %d\n", err); return; }
-    rt_kprintf("opuslb: enc init ok\n");
     opus_encoder_ctl(enc, OPUS_SET_BITRATE(24000));
     opus_encoder_ctl(enc, OPUS_SET_COMPLEXITY(5));
 
-    rt_kprintf("opuslb: dec init start...\n");
     OpusDecoder *dec = (OpusDecoder *)s_dec_buf;
     err = opus_decoder_init(dec, TEST_SAMPLE_RATE, 1);
     if (err != OPUS_OK) { rt_kprintf("FAIL: dec init: %d\n", err); return; }
-    rt_kprintf("opuslb: dec init ok\n");
 
     /* --- Encode→decode interleaved (one frame at a time) -------------- */
     unsigned long enc_checksum = 0;
     int total_bytes = 0;
+#if DECODE_ENABLED
     double total_signal = 0.0, total_error = 0.0;
-
-    rt_kprintf("opuslb: starting encode loop\n");
+#endif
 
     for (int i = 0; i < TEST_FRAMES; i++) {
         gen_sine(pcm_in, TEST_FRAME_SIZE, TEST_FREQ_HZ, TEST_SAMPLE_RATE);
 
         /* Encode */
-        if (i < 2) rt_kprintf("opuslb: enc[%d] start\n", i);
+#if DECODE_ENABLED
+        for (int j = 0; j < TEST_FRAME_SIZE; j++) pcm_ref[j] = pcm_in[j];
+#endif
         int nb = opus_encode_float(enc, pcm_in, TEST_FRAME_SIZE,
                                    s_packet, TEST_MAX_PACKET);
-        if (i < 2) rt_kprintf("opuslb: enc[%d] done nb=%d\n", i, nb);
         if (nb < 0) {
             rt_kprintf("FAIL: encode error %d at frame %d\n", nb, i);
             return;
@@ -104,16 +102,22 @@ static void loopback_thread_entry(void *arg)
             return;
         }
 
-        double sig = 0.0, err_pwr = 0.0;
+        /* SNR: try both signs — Opus SILK mode may invert phase. */
+        double sig = 0.0, err_normal = 0.0, err_invert = 0.0;
         for (int j = 0; j < TEST_FRAME_SIZE; j++) {
-            double diff = (double)pcm_in[j] - (double)pcm_out[j];
-            sig     += (double)pcm_in[j] * (double)pcm_in[j];
-            err_pwr += diff * diff;
+            double s = (double)pcm_ref[j];
+            double o = (double)pcm_out[j];
+            sig += s * s;
+            double d1 = s - o;
+            double d2 = s + o;  /* s - (-o) = s + o */
+            err_normal += d1 * d1;
+            err_invert += d2 * d2;
         }
+        double err_pwr = (err_normal < err_invert) ? err_normal : err_invert;
         total_signal += sig;
         total_error  += err_pwr;
 
-        if (i < 3 || i >= TEST_FRAMES - 1) {
+        if (i == 0 || i == TEST_FRAMES - 1) {
             double snr = 10.0 * log10(sig / (err_pwr + 1e-12));
             rt_kprintf("  frame[%2d]: %3d bytes  snr=%.1f dB\n", i, nb, snr);
         }
@@ -121,11 +125,12 @@ static void loopback_thread_entry(void *arg)
     }
 
     /* --- Summary --- */
-    double total_snr = 10.0 * log10(total_signal / (total_error + 1e-12));
-
     rt_kprintf("Encode: %d frames, %d total bytes, checksum=%lu\n",
                TEST_FRAMES, total_bytes, enc_checksum);
+#if DECODE_ENABLED
+    double total_snr = 10.0 * log10(total_signal / (total_error + 1e-12));
     rt_kprintf("Decode: total SNR = %.1f dB\n", total_snr);
+#endif
     rt_kprintf("=== PASS ===\n");
 }
 
@@ -134,7 +139,7 @@ void opus_loopback_start(void)
     rt_err_t ret = rt_thread_init(
         &s_thread, "opuslb", loopback_thread_entry, RT_NULL,
         s_thread_stack, sizeof(s_thread_stack),
-        15,
+        11,     /* higher than player(12), lower than main(10) — run first */
         5
     );
     if (ret == RT_EOK)

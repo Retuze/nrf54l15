@@ -28,8 +28,8 @@ extern "C" void app_init(void)
     /* Opus sine loopback test (one-shot, prints via RTT). */
     board_opus_loopback_start();
 
-    /* Opus music playback — deferred until loopback test is verified. */
-    /* board_opus_play_start(); */
+    /* Opus music playback on I2S (continuous, D2/SDOUT). */
+    board_opus_play_start();
 
     std::thread(app_thread_entry).detach();
 }
