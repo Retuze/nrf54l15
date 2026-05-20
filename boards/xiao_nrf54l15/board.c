@@ -306,11 +306,8 @@ void board_init(void)
     /* ---- SD card ---------------------------------------------------- */
     board_sd_init();
 
-    /* ---- Opus loopback test (one-shot, prints RTT) --------------- */
-    board_opus_loopback_start();
-
-    /* ---- Opus audio playback --------------------------------------- */
-    board_opus_play_start();
+    /* Opus loopback + player are deferred to app_init() —
+     * the RT-Thread priority table isn't ready yet. */
 }
 
 /* ---- SD 卡初始化 ------------------------------------------------------- */

@@ -25,5 +25,11 @@ static void app_thread_entry()
 // 该函数在线程调度前被调用，请勿在此做除了创建线程以外的操作
 extern "C" void app_init(void)
 {
+    /* Opus sine loopback test (one-shot, prints via RTT). */
+    board_opus_loopback_start();
+
+    /* Opus music playback on I2S (continuous, D2/SDOUT). */
+    board_opus_play_start();
+
     std::thread(app_thread_entry).detach();
 }
