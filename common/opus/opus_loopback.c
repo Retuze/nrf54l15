@@ -57,7 +57,7 @@ static void loopback_thread_entry(void *arg)
 
     /* --- Init --- */
     OpusEncoder *enc = (OpusEncoder *)s_enc_buf;
-    err = opus_encoder_init(enc, TEST_SAMPLE_RATE, 1, OPUS_APPLICATION_VOIP);
+    err = opus_encoder_init(enc, TEST_SAMPLE_RATE, 1, OPUS_APPLICATION_AUDIO);
     if (err != OPUS_OK) { rt_kprintf("FAIL: enc init: %d\n", err); return; }
     opus_encoder_ctl(enc, OPUS_SET_BITRATE(24000));
     opus_encoder_ctl(enc, OPUS_SET_COMPLEXITY(5));
