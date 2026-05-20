@@ -18,10 +18,13 @@
 /* #undef FIXED_POINT */
 
 /* ============================================================
- * Stack allocation: use C99 VLAs
- * Requires RT-Thread thread stack >= 16 KB for 16kHz mono
+ * Stack allocation: NONTHREADSAFE_PSEUDOSTACK
+ * Allocates a single scratch buffer from heap (via opus_alloc_scratch),
+ * then sub-allocates from it. Saves thread stack; NOT thread-safe —
+ * serialize all Opus calls.
  * ============================================================ */
-#define VAR_ARRAYS 1
+#define NONTHREADSAFE_PSEUDOSTACK
+#define GLOBAL_STACK_SIZE 49152   /* 48 KB scratch — enough for 16kHz mono */
 
 /* ============================================================
  * Math functions — available in newlib-nano

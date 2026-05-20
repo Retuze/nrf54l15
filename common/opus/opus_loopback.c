@@ -16,6 +16,7 @@
 #define TEST_FRAMES       50        /* 1 second total */
 #define TEST_MAX_PACKET   1275
 #define TEST_FREQ_HZ      1000.0f
+#define DECODE_ENABLED    0         /* 0=encode only, 1=round-trip */
 
 /* State sizes — from measure_sizes.exe, same on M33 float path */
 #define OPUS_ENC_SIZE     31668
@@ -30,7 +31,7 @@ static unsigned char s_packet[TEST_MAX_PACKET];
 static int  s_sizes[TEST_FRAMES];   /* 50 × 4 = 200 bytes */
 
 /* ---- Thread ----------------------------------------------------------- */
-static rt_uint8_t __attribute__((aligned(8))) s_thread_stack[20480]; /* 20 KB — 编码器 VLA */
+static rt_uint8_t __attribute__((aligned(8))) s_thread_stack[8192]; /* 8 KB — VLA disabled */
 static struct rt_thread s_thread;
 
 static void gen_sine(float *pcm, int n, float freq, float fs)
@@ -43,7 +44,9 @@ static void loopback_thread_entry(void *arg)
 {
     (void)arg;
     float pcm_in[TEST_FRAME_SIZE];
+#if DECODE_ENABLED
     float pcm_out[TEST_FRAME_SIZE];
+#endif
     int err;
 
     rt_kprintf("\n=== Opus sine loopback test ===\n");
@@ -71,12 +74,16 @@ static void loopback_thread_entry(void *arg)
     int total_bytes = 0;
     double total_signal = 0.0, total_error = 0.0;
 
+    rt_kprintf("opuslb: starting encode loop\n");
+
     for (int i = 0; i < TEST_FRAMES; i++) {
         gen_sine(pcm_in, TEST_FRAME_SIZE, TEST_FREQ_HZ, TEST_SAMPLE_RATE);
 
         /* Encode */
+        if (i < 2) rt_kprintf("opuslb: enc[%d] start\n", i);
         int nb = opus_encode_float(enc, pcm_in, TEST_FRAME_SIZE,
                                    s_packet, TEST_MAX_PACKET);
+        if (i < 2) rt_kprintf("opuslb: enc[%d] done nb=%d\n", i, nb);
         if (nb < 0) {
             rt_kprintf("FAIL: encode error %d at frame %d\n", nb, i);
             return;
@@ -86,6 +93,9 @@ static void loopback_thread_entry(void *arg)
             enc_checksum += s_packet[j];
         total_bytes += nb;
 
+#if !DECODE_ENABLED
+        rt_kprintf("  frame[%2d]: %3d bytes (no decode)\n", i, nb);
+#else
         /* Decode */
         int ns = opus_decode_float(dec, s_packet, nb, pcm_out,
                                    TEST_FRAME_SIZE, 0);
@@ -94,7 +104,6 @@ static void loopback_thread_entry(void *arg)
             return;
         }
 
-        /* Per-frame SNR */
         double sig = 0.0, err_pwr = 0.0;
         for (int j = 0; j < TEST_FRAME_SIZE; j++) {
             double diff = (double)pcm_in[j] - (double)pcm_out[j];
@@ -108,6 +117,7 @@ static void loopback_thread_entry(void *arg)
             double snr = 10.0 * log10(sig / (err_pwr + 1e-12));
             rt_kprintf("  frame[%2d]: %3d bytes  snr=%.1f dB\n", i, nb, snr);
         }
+#endif
     }
 
     /* --- Summary --- */
