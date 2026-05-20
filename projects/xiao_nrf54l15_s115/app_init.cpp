@@ -14,10 +14,18 @@ static void app_thread_entry()
     std::print("Hello, {}!\n", "C++23");
     std::print("World!\n");
 
+    int bat_tick = 0;
     for (;;) {
         board_btn_poll();
         board_led_poll();
         board_shell_poll();
+
+        /* 电池采集: ~1s 一次 (100 × 10ms) */
+        if (++bat_tick >= 100) {
+            bat_tick = 0;
+            board_battery_sample();
+        }
+
         std::this_thread::sleep_for(10ms);
     }
 }

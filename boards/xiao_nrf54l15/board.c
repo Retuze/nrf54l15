@@ -18,10 +18,13 @@
 #include <nrfx_power.h>
 #include <nrfx_power_clock.h>
 #include <nrfx_i2s.h>
+#include <nrfx_saadc.h>
 #include <nrf.h>
 #include <math.h>
+#include <string.h>
 #include "rtt.h"
 #include "shell.h"
+#include "pcm_audio.h"
 
 void CLOCK_POWER_IRQHandler(void)
 {
@@ -229,6 +232,9 @@ void rt_hw_console_output(const char *str)
     (void)write(1, str, (unsigned int)rt_strlen(str));
 }
 
+/* ---- 前向声明 --------------------------------------------------------- */
+void board_i2s_playback_start(bool loop);
+
 /* ---- Init ------------------------------------------------------------- */
 static rt_uint8_t g_rt_heap[RT_HEAP_SIZE] ALIGN(RT_ALIGN_SIZE);
 
@@ -302,8 +308,9 @@ void board_init(void)
     };
     button_init(&s_board_btn, &btn_cfg);
 
-    /* ---- I2S loopback test -------------------------------------------- */
-    board_i2s_loopback_start();
+    /* ---- I2S PCM 播放 ------------------------------------------------- */
+    board_i2s_playback_start(true);  /* 循环播放 */
+
 }
 
 /* ---- I2S 回环测试 (Full-Duplex TX+RX) ---------------------------------- */
@@ -341,6 +348,16 @@ static uint32_t g_i2s_rx_a[I2S_BUF_WORDS] __attribute__((aligned(4)));
 static uint32_t g_i2s_rx_b[I2S_BUF_WORDS] __attribute__((aligned(4)));
 
 static volatile bool g_i2s_running;
+
+/* PCM 播放状态 */
+static uint32_t g_playback_pos;   /* 当前 PCM 数据位置 (word 索引) */
+static bool     g_playback_loop;  /* 循环播放 */
+
+/* 麦克风数据缓冲 (Ring buffer, 16-bit 单声道) */
+#define MIC_BUF_SAMPLES  (I2S_BUF_WORDS * 4)  /* 4 帧 = ~65ms */
+static int16_t  g_mic_buf[MIC_BUF_SAMPLES];
+static volatile uint32_t g_mic_write;  /* 写入位置 (ISR 更新) */
+static volatile uint32_t g_mic_read;   /* 读取位置 (线程更新) */
 
 /* 回环统计 */
 static volatile uint32_t g_i2s_cb_count;    /* 回调计数 */
@@ -492,6 +509,288 @@ void board_i2s_stop(void)
     if (!g_i2s_running) return;
     nrfx_i2s_stop(&g_i2s);
     g_i2s_running = false;
-    rt_kprintf("I2S loopback stopped: total %u words, %u mismatches\n",
+    rt_kprintf("I2S stopped: total %u words, %u mismatches\n",
                (unsigned)g_i2s_total_words, (unsigned)g_i2s_mismatches);
+}
+
+/* ---- I2S PCM 播放 (TX-only, 从 Flash 流式输出) -------------------------- */
+
+/* 将 uint16_t PCM 样本展开为 I2S 32-bit 字 (STEREO: 左右声道相同) */
+static inline void pcm_expand(uint32_t *dst, const uint16_t *src, uint32_t n)
+{
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t s = src[i];
+        dst[i] = (s << 16) | s;
+    }
+}
+
+/* 从 I2S 32-bit 字提取左声道 int16_t 样本 */
+static inline void mic_extract(int16_t *dst, const uint32_t *src, uint32_t n)
+{
+    for (uint32_t i = 0; i < n; i++) {
+        dst[i] = (int16_t)(src[i] >> 16);  /* 高 16 位 = 左声道 */
+    }
+}
+
+static void i2s_playback_data_handler(nrfx_i2s_buffers_t const *p_released,
+                                      uint32_t                   status)
+{
+    if (status & NRFX_I2S_STATUS_TRANSFER_STOPPED) {
+        g_i2s_running = false;
+        return;
+    }
+
+    uint32_t *next_tx;
+    uint32_t *next_rx;
+    if (p_released && p_released->p_tx_buffer) {
+        next_tx = (p_released->p_tx_buffer == g_i2s_tx_a) ? g_i2s_tx_a : g_i2s_tx_b;
+        next_rx = (p_released->p_tx_buffer == g_i2s_tx_a) ? g_i2s_rx_a : g_i2s_rx_b;
+
+        /* 保存刚收到的麦克风数据到 ring buffer */
+        uint32_t w = g_mic_write;
+        mic_extract(&g_mic_buf[w], next_rx, I2S_BUF_WORDS);
+        w += I2S_BUF_WORDS;
+        if (w >= MIC_BUF_SAMPLES) w = 0;
+        g_mic_write = w;
+    } else {
+        next_tx = g_i2s_tx_b;
+        next_rx = g_i2s_rx_b;
+    }
+
+    /* 填充下一帧 TX 数据 */
+    uint32_t remaining = PCM_NUM_SAMPLES - g_playback_pos;
+    uint32_t to_copy   = remaining < I2S_BUF_WORDS ? remaining : I2S_BUF_WORDS;
+
+    pcm_expand(next_tx, &pcm_audio_pcm[g_playback_pos], to_copy);
+    g_playback_pos += to_copy;
+
+    if (g_playback_pos >= PCM_NUM_SAMPLES) {
+        if (g_playback_loop) {
+            g_playback_pos = 0;
+        } else {
+            if (to_copy < I2S_BUF_WORDS) {
+                memset(&next_tx[to_copy], 0,
+                       (I2S_BUF_WORDS - to_copy) * sizeof(uint32_t));
+            }
+            nrfx_i2s_buffers_t next = {
+                .p_tx_buffer = next_tx,
+                .p_rx_buffer = next_rx,
+                .buffer_size = I2S_BUF_WORDS,
+            };
+            nrfx_i2s_next_buffers_set(&g_i2s, &next);
+            nrfx_i2s_stop(&g_i2s);
+            return;
+        }
+    }
+
+    if (to_copy < I2S_BUF_WORDS) {
+        uint32_t wrap = I2S_BUF_WORDS - to_copy;
+        pcm_expand(&next_tx[to_copy], &pcm_audio_pcm[0], wrap);
+        g_playback_pos = wrap;
+    }
+
+    nrfx_i2s_buffers_t next = {
+        .p_tx_buffer = next_tx,
+        .p_rx_buffer = next_rx,
+        .buffer_size = I2S_BUF_WORDS,
+    };
+    nrfx_i2s_next_buffers_set(&g_i2s, &next);
+}
+
+void board_i2s_playback_start(bool loop)
+{
+    if (g_i2s_running) return;
+
+    g_playback_pos  = 0;
+    g_playback_loop = loop;
+
+    /* 预填充 TX 双缓冲, RX 清零 */
+    pcm_expand(g_i2s_tx_a, &pcm_audio_pcm[0], I2S_BUF_WORDS);
+    pcm_expand(g_i2s_tx_b, &pcm_audio_pcm[I2S_BUF_WORDS], I2S_BUF_WORDS);
+    memset(g_i2s_rx_a, 0, I2S_BUF_WORDS * sizeof(uint32_t));
+    memset(g_i2s_rx_b, 0, I2S_BUF_WORDS * sizeof(uint32_t));
+    g_playback_pos = I2S_BUF_WORDS * 2;
+    g_mic_write = 0;
+    g_mic_read  = 0;
+
+    nrfx_i2s_config_t cfg = NRFX_I2S_DEFAULT_CONFIG(
+        I2S_SCK_PIN,
+        I2S_LRCK_PIN,
+        I2S_MCK_PIN,
+        I2S_SDOUT_PIN,
+        I2S_SDIN_PIN
+    );
+    cfg.sample_width = NRF_I2S_SWIDTH_16BIT;
+    cfg.alignment    = NRF_I2S_ALIGN_LEFT;
+    cfg.channels     = NRF_I2S_CHANNELS_STEREO;
+    cfg.mck_setup    = NRF_I2S_MCK_32MDIV8;   /* MCK = 32M/8 = 4 MHz (整除) */
+    cfg.ratio        = NRF_I2S_RATIO_256X;    /* LRCK = 4M/256 = 15.625 kHz (整除) */
+    cfg.irq_priority = 6;
+
+    nrfx_err_t err = nrfx_i2s_init(&g_i2s, &cfg, i2s_playback_data_handler);
+    if (err != NRFX_SUCCESS) {
+        rt_kprintf("I2S playback init failed: %u\n", (unsigned)err);
+        return;
+    }
+
+    nrfx_i2s_buffers_t initial = {
+        .p_tx_buffer = g_i2s_tx_a,
+        .p_rx_buffer = g_i2s_rx_a,
+        .buffer_size = I2S_BUF_WORDS,
+    };
+    err = nrfx_i2s_start(&g_i2s, &initial, 0);
+    if (err != NRFX_SUCCESS) {
+        rt_kprintf("I2S playback start failed: %u\n", (unsigned)err);
+        return;
+    }
+
+    g_i2s_running = true;
+    rt_kprintf("I2S PCM playback started: 15.625kHz stereo, %u ms%s\n",
+               (unsigned)PCM_DURATION_MS, loop ? ", looping" : "");
+    rt_kprintf("  Connect D2(SDOUT) to your I2S DAC/amp\n");
+}
+
+void board_i2s_playback_toggle(void)
+{
+    if (g_i2s_running) {
+        board_i2s_stop();
+        rt_kprintf("Playback stopped by user\n");
+    } else {
+        board_i2s_playback_start(true);
+    }
+}
+
+uint32_t board_i2s_mic_read(int16_t *buf, uint32_t max_samples)
+{
+    uint32_t r = g_mic_read;
+    uint32_t w = g_mic_write;
+    uint32_t avail;
+
+    if (w >= r) {
+        avail = w - r;
+    } else {
+        avail = MIC_BUF_SAMPLES - r + w;
+    }
+
+    uint32_t n = avail < max_samples ? avail : max_samples;
+    for (uint32_t i = 0; i < n; i++) {
+        buf[i] = g_mic_buf[r];
+        r++;
+        if (r >= MIC_BUF_SAMPLES) r = 0;
+    }
+    g_mic_read = r;
+    return n;
+}
+
+/* ---- 电池电压测量 (SAADC, P1.13, TPS22916 开关 P1.14) ---------------- */
+
+/*
+ * 电路: 电池 → TPS22916 (P1.14 使能) → 1:2 分压 (1M+1M) → P1.13 (ADC).
+ * 采集流程: P1.14 HIGH → 延时稳定 → SAADC 采样 (阻塞, <1ms) → P1.14 LOW.
+ *
+ * SAADC: 单端, 增益 1/3, 内部 1.024V 参考, 14-bit, 256x 过采样 (最高精度).
+ * 量程: 0 ~ 3.072V (引脚) → 0 ~ 6.144V (电池).
+ * 14-bit 单次范围 0..16383, 256x 过采样累加后 ≈ 0..4194303.
+ *
+ * 滑动窗口: 8 个样本取平均, 软件定时器 ~1s 周期.
+ */
+#define BAT_WINDOW_SIZE   8
+#define BAT_GAIN_VAL      (1.0f / 3.0f)
+#define BAT_VREF          1.024f
+#define BAT_ADC_BITS      14
+#define BAT_OVERSAMPLE    256
+#define BAT_DIVIDER       2.0f
+
+#define BAT_RES_MAX  ((1u << BAT_ADC_BITS) - 1)  /* 16383, 过采样不改变输出范围 */
+#define BAT_MV_PER_LSB (BAT_VREF / BAT_GAIN_VAL / (float)(BAT_RES_MAX + 1) \
+                        * BAT_DIVIDER * 1000.0f)  /* ≈ 0.375 mV/LSB */
+
+static uint16_t g_bat_window[BAT_WINDOW_SIZE];
+static uint8_t  g_bat_idx;
+static uint8_t  g_bat_count;
+static int      g_bat_mv;
+
+/* 执行一次电池采集 + 滑窗 + 打印. 由 app 线程周期性调用. */
+void board_battery_sample(void)
+{
+    static uint16_t sample;
+    static bool     saadc_inited;
+
+    if (!saadc_inited) {
+        nrfx_err_t err = nrfx_saadc_init(NRFX_SAADC_DEFAULT_CONFIG_IRQ_PRIORITY);
+        if (err != NRFX_SUCCESS && err != NRFX_ERROR_ALREADY) {
+            rt_kprintf("[BAT] saadc init failed: %u\n", (unsigned)err);
+            return;
+        }
+
+        nrfx_saadc_channel_t ch = {
+            .channel_config = {
+                .gain      = NRF_SAADC_GAIN1_3,
+                .reference = NRF_SAADC_REFERENCE_INTERNAL,
+#if NRF_SAADC_HAS_ACQTIME_ENUM
+                .acq_time  = NRF_SAADC_ACQTIME_40US,
+#else
+                .acq_time  = 200,
+#endif
+                .mode      = NRF_SAADC_MODE_SINGLE_ENDED,
+                .burst     = NRF_SAADC_BURST_DISABLED,
+            },
+            .pin_p         = BAT_ADC_PIN,
+            .pin_n         = NRF_SAADC_INPUT_DISABLED,
+            .channel_index = 0,
+        };
+        nrf_gpio_cfg_output(BAT_EN_PIN);
+        nrf_gpio_pin_write(BAT_EN_PIN, 0);
+
+        err = nrfx_saadc_channel_config(&ch);
+        if (err != NRFX_SUCCESS) {
+            rt_kprintf("[BAT] channel config failed: %u\n", (unsigned)err);
+            return;
+        }
+
+        err = nrfx_saadc_simple_mode_set(1u << 0,
+            NRF_SAADC_RESOLUTION_14BIT, NRF_SAADC_OVERSAMPLE_256X, NULL);
+        if (err != NRFX_SUCCESS) {
+            rt_kprintf("[BAT] simple_mode_set failed: %u\n", (unsigned)err);
+            return;
+        }
+
+        saadc_inited = true;
+    }
+
+    /* 使能 TPS22916, 等稳定 */
+    nrf_gpio_pin_write(BAT_EN_PIN, 1);
+    for (volatile int i = 0; i < 200; i++) {}
+
+    /* 阻塞采集: 过采样后只产生 1 个结果 */
+    nrfx_saadc_buffer_set((nrf_saadc_value_t *)&sample, 1);
+    nrfx_saadc_mode_trigger();
+
+    /* 关断开关, 省电 */
+    nrf_gpio_pin_write(BAT_EN_PIN, 0);
+
+    uint16_t single = sample;
+
+    /* 滑动窗口 */
+    g_bat_window[g_bat_idx] = single;
+    g_bat_idx = (g_bat_idx + 1) % BAT_WINDOW_SIZE;
+    if (g_bat_count < BAT_WINDOW_SIZE) g_bat_count++;
+
+    /* 窗口平均值 */
+    uint32_t avg = 0;
+    for (uint8_t i = 0; i < g_bat_count; i++) {
+        avg += g_bat_window[i];
+    }
+    avg /= g_bat_count;
+    g_bat_mv = (int)((float)avg * BAT_MV_PER_LSB + 0.5f);
+
+    /* 打印 */
+    rt_kprintf("[BAT] raw=0x%04X mv=%d avg_mv=%d (window=%u/%u)\n",
+               (unsigned)single, (int)((float)single * BAT_MV_PER_LSB + 0.5f),
+               g_bat_mv, (unsigned)g_bat_count, (unsigned)BAT_WINDOW_SIZE);
+}
+
+int board_battery_read_mv(void)
+{
+    return g_bat_mv;
 }
