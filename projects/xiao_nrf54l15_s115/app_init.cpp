@@ -14,6 +14,12 @@ static void app_thread_entry()
     std::print("Hello, {}!\n", "C++23");
     std::print("World!\n");
 
+    /* Opus audio playback from Flash (loop). */
+    board_opus_play_start();
+
+    /* Opus sine loopback test (requires D2→D4 jumper). */
+    /* board_opus_loopback_start(); */
+
     int bat_tick = 0;
     for (;;) {
         board_btn_poll();
@@ -33,11 +39,5 @@ static void app_thread_entry()
 // 该函数在线程调度前被调用，请勿在此做除了创建线程以外的操作
 extern "C" void app_init(void)
 {
-    /* Opus audio playback from Flash (loop). */
-    board_opus_play_start();
-
-    /* Opus sine loopback test (requires D2→D4 jumper). */
-    /* board_opus_loopback_start(); */
-
     std::thread(app_thread_entry).detach();
 }
