@@ -66,11 +66,14 @@ static inline uint32_t ring_avail_write(void)
 }
 
 /* ISR pops samples from the ring and packs them into an I2S TX buffer.
- * Each I2S word is the 16-bit sample left-aligned in a 32-bit frame. */
+ * Stereo: same sample on both L (upper 16 bits) and R (lower 16 bits).
+ * Amplitude halved (>>1) to protect the speaker. */
 static void ring_pop_isr(uint32_t *tx_buf, uint32_t count)
 {
     for (uint32_t i = 0; i < count; i++) {
-        tx_buf[i] = ((uint32_t)(uint16_t)g_ring[g_ring_read]) << 16;
+        int16_t half = g_ring[g_ring_read] >> 1;
+        uint16_t s   = (uint16_t)half;
+        tx_buf[i] = ((uint32_t)s << 16) | s;
         g_ring_read = (g_ring_read + 1u) & RING_MASK;
     }
 }
@@ -253,7 +256,7 @@ bool opus_player_start(void)
     );
     cfg.sample_width = NRF_I2S_SWIDTH_16BIT;
     cfg.alignment    = NRF_I2S_ALIGN_LEFT;
-    cfg.channels     = NRF_I2S_CHANNELS_LEFT;
+    cfg.channels     = NRF_I2S_CHANNELS_STEREO;
     cfg.mck_setup    = NRF_I2S_MCK_32MDIV8;
     cfg.ratio        = NRF_I2S_RATIO_256X;    /* LRCK ≈ 15.625 kHz */
     cfg.irq_priority = 6;

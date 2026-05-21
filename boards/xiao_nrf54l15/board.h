@@ -128,17 +128,6 @@ void board_sd_init(void);
  * 需先用杜邦线连接 D2(SDOUT) → D4(SDIN). */
 void board_i2s_loopback_start(void);
 
-/* I2S PCM 播放: 从 Flash 流式播放 PCM 音频 (16-bit, 15.625 kHz, TX-only).
- * loop=true 循环播放, loop=false 播完自动停止.
- * 连接 D2(SDOUT) 到 I2S DAC/功放. */
-void board_i2s_playback_start(bool loop);
-
-/* 切换播放/停止 (循环模式). */
-void board_i2s_playback_toggle(void);
-
-/* 读取麦克风数据 (16-bit 单声道). 返回实际读取的样本数. */
-uint32_t board_i2s_mic_read(int16_t *buf, uint32_t max_samples);
-
 /* 停止当前 I2S 传输 (回环或播放). */
 void board_i2s_stop(void);
 

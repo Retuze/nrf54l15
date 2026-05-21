@@ -76,7 +76,6 @@ set(SOURCES
 
     # Board
     ${CMAKE_CURRENT_SOURCE_DIR}/../../boards/xiao_nrf54l15/board.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../boards/xiao_nrf54l15/pcm_audio.c
 
     # Project app
     ${CMAKE_CURRENT_SOURCE_DIR}/app_init.cpp
