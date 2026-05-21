@@ -19,11 +19,13 @@ static uint32_t __attribute__((aligned(4))) g_tx_b[BUF_SAMPLES];
 static volatile uint32_t g_pcm_idx;
 static volatile bool g_running;
 
-/* Fill an I2S TX buffer from raw_pcm_data[], wrapping. */
+/* Fill an I2S TX buffer from raw_pcm_data[], wrapping.
+ * Stereo: same sample on both L (upper 16 bits) and R (lower 16 bits). */
 static void fill_buf(uint32_t *tx)
 {
     for (uint32_t i = 0; i < BUF_SAMPLES; i++) {
-        tx[i] = ((uint32_t)(uint16_t)raw_pcm_data[g_pcm_idx]) << 16;
+        uint16_t ob = (uint16_t)raw_pcm_data[g_pcm_idx] ^ 0x8000u;
+        tx[i] = ((uint32_t)ob << 16) | ob;
         g_pcm_idx++;
         if (g_pcm_idx >= RAW_PCM_SAMPLE_COUNT)
             g_pcm_idx = 0;
@@ -63,7 +65,7 @@ bool raw_pcm_player_start(void)
     );
     cfg.sample_width = NRF_I2S_SWIDTH_16BIT;
     cfg.alignment    = NRF_I2S_ALIGN_LEFT;
-    cfg.channels     = NRF_I2S_CHANNELS_LEFT;
+    cfg.channels     = NRF_I2S_CHANNELS_STEREO;
     cfg.mck_setup    = NRF_I2S_MCK_32MDIV8;
     cfg.ratio        = NRF_I2S_RATIO_256X;
     cfg.irq_priority = 6;
