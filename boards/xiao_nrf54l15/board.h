@@ -111,11 +111,6 @@ bool board_user_key_pressed(void);
 shell_t *board_shell_get(void);
 bool board_shell_poll(void);
 
-/* ---- Raw PCM 播放 (I2S TX-only, D2/SDOUT, 无 Opus, 验证 I2S) ------- */
-
-void board_raw_pcm_play_start(void);
-void board_raw_pcm_play_stop(void);
-
 /* ---- Opus 音频播放 (I2S TX-only, D2/SDOUT) --------------------------- */
 
 void board_opus_play_start(void);

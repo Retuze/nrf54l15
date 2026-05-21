@@ -17,7 +17,6 @@
 #include <hal/nrf_timer.h>
 #include <nrfx_power.h>
 #include <nrfx_power_clock.h>
-#include "raw_pcm_player.h"
 #include "opus_player.h"
 #include "opus_loopback.h"
 #include <nrfx_i2s.h>
@@ -314,12 +313,8 @@ void board_init(void)
     /* ---- SD card ---------------------------------------------------- */
     board_sd_init();
 
-    /* Opus loopback + player are deferred to app_init() —
+    /* Audio playback (I2S PCM / Opus) deferred to app_init() —
      * the RT-Thread priority table isn't ready yet. */
-
-    /* ---- I2S PCM 播放 ------------------------------------------------- */
-    board_i2s_playback_start(true);  /* 循环播放 */
-
 }
 
 /* ---- I2S 回环测试 (Full-Duplex TX+RX) ---------------------------------- */
@@ -545,18 +540,6 @@ void board_opus_play_start(void)
 void board_opus_play_stop(void)
 {
     opus_player_stop();
-}
-
-/* ---- Raw PCM player wrappers ------------------------------------------- */
-
-void board_raw_pcm_play_start(void)
-{
-    raw_pcm_player_start();
-}
-
-void board_raw_pcm_play_stop(void)
-{
-    raw_pcm_player_stop();
 }
 
 void board_opus_loopback_start(void)
