@@ -64,6 +64,7 @@ set(SOURCES
     ${NRFX_LOCAL}/nrfx/drivers/src/nrfx_pwm.c
     ${NRFX_LOCAL}/nrfx/drivers/src/nrfx_gpiote.c
     ${NRFX_LOCAL}/nrfx/drivers/src/nrfx_i2s.c
+    ${NRFX_LOCAL}/nrfx/drivers/src/nrfx_saadc.c
 
     # Project HAL wrappers
     ${NRFX_LOCAL}/hal/hal_gpio.c
@@ -77,6 +78,7 @@ set(SOURCES
 
     # Board
     ${CMAKE_CURRENT_SOURCE_DIR}/../../boards/xiao_nrf54l15/board.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../boards/xiao_nrf54l15/pcm_audio.c
 
     # Project app
     ${CMAKE_CURRENT_SOURCE_DIR}/app_init.cpp
@@ -130,6 +132,7 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
     NRFX_UARTE20_ENABLED=1
     NRFX_I2S_ENABLED=1
     NRFX_I2S20_ENABLED=1
+    NRFX_SAADC_ENABLED=1
     NRF_CONFIG_CPU_FREQ_MHZ=128
 )
 

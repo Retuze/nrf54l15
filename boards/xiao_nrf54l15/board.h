@@ -1,53 +1,69 @@
 /*
- * board.h - Seeed Studio XIAO nRF54L15 板级定义。
+ * board.h - Seeed Studio XIAO nRF54L15 board-level configuration.
  *
- * 参考: https://wiki.seeedstudio.com/cn/xiao_nrf54l15_sense_getting_started/
+ * 主要选项: LED 低有效, KEY 低有效, RT-Thread 配置, UART/I2S 引脚复用等.
  *
- * 板载硬件:
- *   USER LED  : P2.00  (低电平有效)
- *   USER KEY  : P0.00  (低电平有效，内部上拉)
- *   UART TX    : P1.09
- *   UART RX    : P1.08
- * 排针 (XIAO D0..D15):
- *   D0  P1.04   D8  P2.01
- *   D1  P1.05   D9  P2.04
- *   D2  P1.06   D10 P2.02
- *   D3  P1.07   D11 P0.03
- *   D4  P1.10   D12 P0.04
- *   D5  P1.11   D13 P2.10
- *   D6  P2.08   D14 P2.09
- *   D7  P2.07   D15 P2.06
- *
+ * 引脚映射 (核心):
+ *   LED_R          P2.00  (低有效)
+ *   KEY            P1.15  (低有效, 按下 = LOW)
+ *   UART_TX / D5   P0.04  → P1.09 [ESP-AT]
+ *   UART_RX / D6   P0.05  → P1.08 [ESP-AT]
+ *   I2S_SCK  / D0  P1.04
+ *   I2S_LRCK / D1  P1.05
+ *   I2S_SDOUT/ D2  P1.06
+ *   I2S_MCK  / D3  P1.07
+ *   I2S_SDIN / D4  P1.10
+ *   SD_SCK   / D6  P0.05 (复用, 与 UART_RX 时空隔离)
+ *   SD_MOSI  / D7  P0.06
+ *   SD_MISO  / D8  P0.07
+ *   SD_CS    / D9  P0.08
  * 其他:
  *   RF Switch Power  P2.03
  *   RF Switch Select P2.05
- *   AIN7_VBAT        P1.14
+ *   BAT_EN           P1.14  (TPS22916 ON 引脚, 高电平使能)
+ *   BAT_ADC          P1.13  (分压后电压, SAADC 读取)
  */
 #ifndef BOARD_H
 #define BOARD_H
 
-#include "hal_gpio.h"
-#include "hal_sd.h"
-#include "indicator.h"
-#include "button.h"
+#include "led_indicator.h"
+#include "button_driver.h"
 #include "shell.h"
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/* ---- 板载引脚 -------------------------------------------------------- */
+/* ---- 板级配置 --------------------------------------------------------- */
 
-#define LED_PIN         PIN_P2(0)
+/* 项目名必须为驱动注册时所需的精确字符串。 */
+#define BOARD_NAME         "xiao_nrf54l15"
+
+#define RT_HEAP_SIZE        (64 * 1024)
+#define RT_TICK_PER_SECOND  1000
+
+/* ---- 引脚 ------------------------------------------------------------- */
+
+#define PIN_P1(n)  ((n) + 0x100u)
+#define PIN_P2(n)  ((n) + 0x200u)
+#define PIN_P0(n)  (n)
+
+#define LED_PIN    PIN_P2(0)
+#define KEY_PIN    PIN_P1(15)
+
 #define LED_ACTIVE_LOW  1
-
-#define KEY_PIN         PIN_P0(0)
 #define KEY_ACTIVE_LOW  1
-
-/* ---- UART ------------------------------------------------------------ */
 
 #define UART_TX_PIN  PIN_P1(9)
 #define UART_RX_PIN  PIN_P1(8)
+
+/* ---- 电池 ------------------------------------------------------------ */
+
+#define BAT_EN_PIN   PIN_P1(15)  /* TPS22916 使能, 高电平有效 */
+#define BAT_ADC_PIN  PIN_P1(14)  /* 分压后 ADC 输入 (AIN7) */
 
 /* ---- 排针 ------------------------------------------------------------ */
 
@@ -56,45 +72,34 @@ extern "C" {
 #define D2   PIN_P1(6)
 #define D3   PIN_P1(7)
 #define D4   PIN_P1(10)
-#define D5   PIN_P1(11)
-#define D6   PIN_P2(8)
-#define D7   PIN_P2(7)
-#define D8   PIN_P2(1)
-#define D9   PIN_P2(4)
-#define D10  PIN_P2(2)
-#define D11  PIN_P0(3)
-#define D12  PIN_P0(4)
-#define D13  PIN_P2(10)
-#define D14  PIN_P2(9)
-#define D15  PIN_P2(6)
+#define D5   PIN_P0(4)
+#define D6   PIN_P0(5)
+#define D7   PIN_P0(6)
+#define D8   PIN_P0(7)
+#define D9   PIN_P0(8)
 
-/* ---- I2S (D0-D3 on header, contiguous, logic-analyzer friendly) ---- */
+/* ---- I2S 引脚 (同 D0-D4) ---------------------------------------------- */
 
 #define I2S_SCK_PIN   PIN_P1(4)   /* D0 */
 #define I2S_LRCK_PIN  PIN_P1(5)   /* D1 */
 #define I2S_SDOUT_PIN PIN_P1(6)   /* D2 */
 #define I2S_MCK_PIN   PIN_P1(7)   /* D3 */
-#define I2S_SDIN_PIN  PIN_P1(10)  /* D4 — 回环测试: 用杜邦线将 D2(SDOUT) 连到 D4(SDIN) */
+#define I2S_SDIN_PIN  PIN_P1(10)  /* D4 */
 
-/* ---- SD 卡 SPI (D6-D9) ------------------------------------------------ */
+/* ---- SD 卡 (SPI, D6-D9) ---------------------------------------------- */
 
-#define SD_SCK_PIN    PIN_P2(8)   /* D6 */
-#define SD_MOSI_PIN   PIN_P2(7)   /* D7 */
-#define SD_MISO_PIN   PIN_P2(1)   /* D8 */
-#define SD_CS_PIN     PIN_P2(4)   /* D9 */
+#define SD_SCK_PIN    PIN_P0(5)
+#define SD_MOSI_PIN   PIN_P0(6)
+#define SD_MISO_PIN   PIN_P0(7)
+#define SD_CS_PIN     PIN_P0(8)
 
-/* ---- 板载 LED -------------------------------------------------------- */
+/* ---- LED / Button ----------------------------------------------------- */
 
-/* 获取实例指针，供注册 pattern / start / stop 等高级操作。 */
 led_indicator_t *board_led_get(void);
-
-/* 每周期 poll（驱动内置 FSM 和自定义回调）。 */
 void board_led_poll(void);
 
-/* ---- 板载按键 -------------------------------------------------------- */
-
 button_t *board_btn_get(void);
-void board_btn_set_callbacks(const button_callbacks_t *cbs);
+void board_btn_set_callbacks(const struct button_callbacks *cbs);
 void board_btn_poll(void);
 bool board_btn_is_pressed(void);
 
@@ -121,6 +126,34 @@ void board_opus_loopback_start(void);
 
 /* 初始化 SD 卡 (SPI 模式, D6-D9). */
 void board_sd_init(void);
+
+/* ---- I2S 音频播放 ---------------------------------------------------- */
+
+/* I2S 回环测试: 正弦波输出 + 回环接收校验 (16-bit, 15.625 kHz 采样率).
+ * 需先用杜邦线连接 D2(SDOUT) → D4(SDIN). */
+void board_i2s_loopback_start(void);
+
+/* I2S PCM 播放: 从 Flash 流式播放 PCM 音频 (16-bit, 15.625 kHz, TX-only).
+ * loop=true 循环播放, loop=false 播完自动停止.
+ * 连接 D2(SDOUT) 到 I2S DAC/功放. */
+void board_i2s_playback_start(bool loop);
+
+/* 切换播放/停止 (循环模式). */
+void board_i2s_playback_toggle(void);
+
+/* 读取麦克风数据 (16-bit 单声道). 返回实际读取的样本数. */
+uint32_t board_i2s_mic_read(int16_t *buf, uint32_t max_samples);
+
+/* 停止当前 I2S 传输 (回环或播放). */
+void board_i2s_stop(void);
+
+/* ---- 电池 ------------------------------------------------------------ */
+
+/* 执行一次电池采集 + 滑窗 + 打印. 首次调用自动初始化 SAADC. */
+void board_battery_sample(void);
+
+/* 读取电池电压 (窗口平均), 返回值 mV. */
+int board_battery_read_mv(void);
 
 /* ---- 初始化 ---------------------------------------------------------- */
 
