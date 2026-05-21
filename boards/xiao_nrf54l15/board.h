@@ -26,8 +26,8 @@
 #ifndef BOARD_H
 #define BOARD_H
 
-#include "led_indicator.h"
-#include "button_driver.h"
+#include "indicator.h"
+#include "button.h"
 #include "shell.h"
 #include <stdint.h>
 #include <stdbool.h>
@@ -99,7 +99,7 @@ led_indicator_t *board_led_get(void);
 void board_led_poll(void);
 
 button_t *board_btn_get(void);
-void board_btn_set_callbacks(const struct button_callbacks *cbs);
+void board_btn_set_callbacks(const button_callbacks_t *cbs);
 void board_btn_poll(void);
 bool board_btn_is_pressed(void);
 

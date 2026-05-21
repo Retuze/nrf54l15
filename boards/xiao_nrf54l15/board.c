@@ -13,6 +13,7 @@
 #include "hal_delay.h"
 #include "hal_gpio.h"
 #include "hal_uart.h"
+#include "hal_sd.h"
 #include <hal/nrf_gpio.h>
 #include <hal/nrf_timer.h>
 #include <nrfx_power.h>
