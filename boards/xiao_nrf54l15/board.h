@@ -20,8 +20,8 @@
  * 其他:
  *   RF Switch Power  P2.03
  *   RF Switch Select P2.05
- *   BAT_EN           P1.14  (TPS22916 ON 引脚, 高电平使能)
- *   BAT_ADC          P1.13  (分压后电压, SAADC 读取)
+ *   BAT_EN           P1.15  (TPS22916 ON 引脚, 高电平使能)
+ *   BAT_ADC          P1.14  (分压后电压, SAADC 读取)
  */
 #ifndef BOARD_H
 #define BOARD_H
@@ -47,12 +47,10 @@ extern "C" {
 
 /* ---- 引脚 ------------------------------------------------------------- */
 
-#define PIN_P1(n)  ((n) + 0x100u)
-#define PIN_P2(n)  ((n) + 0x200u)
-#define PIN_P0(n)  (n)
+#include "hal_gpio.h"
 
 #define LED_PIN    PIN_P2(0)
-#define KEY_PIN    PIN_P1(15)
+#define KEY_PIN    PIN_P0(0)
 
 #define LED_ACTIVE_LOW  1
 #define KEY_ACTIVE_LOW  1

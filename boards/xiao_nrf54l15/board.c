@@ -307,7 +307,7 @@ void board_init(void)
     button_init(&s_board_btn, &btn_cfg);
 
     /* ---- SD card ---------------------------------------------------- */
-    board_sd_init();
+    // board_sd_init();
 
     /* Audio playback (I2S PCM / Opus) deferred to app_init() —
      * the RT-Thread priority table isn't ready yet. */
@@ -533,11 +533,11 @@ void board_opus_loopback_start(void)
     opus_loopback_start();
 }
 
-/* ---- 电池电压测量 (SAADC, P1.13, TPS22916 开关 P1.14) ---------------- */
+/* ---- 电池电压测量 (SAADC, P1.14, TPS22916 开关 P1.15) ---------------- */
 
 /*
- * 电路: 电池 → TPS22916 (P1.14 使能) → 1:2 分压 (1M+1M) → P1.13 (ADC).
- * 采集流程: P1.14 HIGH → 延时稳定 → SAADC 采样 (阻塞, <1ms) → P1.14 LOW.
+ * 电路: 电池 → TPS22916 (P1.15 使能) → 1:2 分压 (1M+1M) → P1.14 (ADC).
+ * 采集流程: P1.15 HIGH → 延时稳定 → SAADC 采样 (阻塞, <1ms) → P1.15 LOW.
  *
  * SAADC: 单端, 增益 1/3, 内部 1.024V 参考, 14-bit, 256x 过采样 (最高精度).
  * 量程: 0 ~ 3.072V (引脚) → 0 ~ 6.144V (电池).

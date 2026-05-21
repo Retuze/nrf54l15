@@ -3,8 +3,8 @@
  * Decodes embedded Opus packets on a background thread, feeds PCM to the
  * I2S peripheral through a ping-pong DMA double-buffer.
  *
- * The I2S runs at ~15.625 kHz LRCK (16-bit, left-aligned), close enough to
- * the 16 kHz Opus sample rate for a < 2.5% pitch error.
+ * I2S runs at ~15.625 kHz LRCK (16-bit, left-aligned, stereo).
+ * Each 32-bit DMA word packs L[31:16] | R[15:0].
  */
 #include "opus_player.h"
 #include "opus.h"
@@ -33,8 +33,25 @@ static uint32_t __attribute__((aligned(4))) g_tx_a[I2S_BUF_WORDS];
 static uint32_t __attribute__((aligned(4))) g_tx_b[I2S_BUF_WORDS];
 
 /* ---- PCM ring buffer -------------------------------------------------- */
-#define RING_SIZE  2048u                /* int16_t samples; must be power-of-two */
-#define RING_MASK  (RING_SIZE - 1u)
+/*
+ * Producer (decode thread) → ring buffer → Consumer (I2S ISR).
+ *
+ * Rate mismatch: I2S plays at 15.625 kHz, Opus decodes at 16 kHz.
+ * The consumer is ~2.34% slower, so without throttling the ring grows
+ * without bound.  Water-level control solves this:
+ *
+ *   RING_HIGH_WATER (1400): decoder pauses  — consumer has enough data
+ *   RING_LOW_WATER   (400): decoder resumes — prevents underflow
+ *
+ * Buffer: 2048 int16_t = 128 ms at 16 kHz.
+ * Each Opus frame = 320 samples (20 ms).  H−L gap = 1000 ≈ 3.1 frames.
+ * ISR drains ~262 source samples per DMA callback (256 stereo frames × 128/125).
+ * From H→L takes ~1000/262 ≈ 4 callbacks ≈ 65 ms @ 15.625 kHz.
+ */
+#define RING_SIZE        2048u
+#define RING_MASK        (RING_SIZE - 1u)
+#define RING_HIGH_WATER  1400u  /* decoder pauses above this */
+#define RING_LOW_WATER    400u  /* decoder resumes below this */
 
 static int16_t g_ring[RING_SIZE];
 static volatile uint32_t g_ring_read;   /* ISR advances this */
@@ -53,48 +70,62 @@ static void i2s_tx_handler(nrfx_i2s_buffers_t const *p_released, uint32_t status
  * Ring buffer helpers
  * ======================================================================== */
 
-/* Call only from thread context. */
+/* Call from thread context (decode thread). */
 static inline uint32_t ring_avail_read(void)
 {
     return (g_ring_write - g_ring_read) & RING_MASK;
 }
 
-/* Call only from thread context. */
+/* Call from thread context (decode thread). */
 static inline uint32_t ring_avail_write(void)
 {
     return RING_SIZE - ring_avail_read();
 }
 
-/* ISR pops samples from the ring and packs them into an I2S TX buffer.
- * Stereo: same sample on both L (upper 16 bits) and R (lower 16 bits).
- * Amplitude halved (>>1) to protect the speaker. */
+/* ISR pops source samples from the ring, packs them into I2S stereo DMA words.
+ * STEREO mode: each 32-bit DMA word = L[31:16] | R[15:0].
+ * I2S LRCK = 15.625 kHz, Opus decodes @ 16 kHz.  Ratio = 128/125.
+ * Linear interpolation between adjacent source samples for smooth rate conversion. */
 static void ring_pop_isr(uint32_t *tx_buf, uint32_t count)
 {
+    static uint8_t phase;  /* fractional source position, 125 units per input sample */
+
     for (uint32_t i = 0; i < count; i++) {
-        int16_t half = g_ring[g_ring_read] >> 1;
-        uint16_t s   = (uint16_t)half;
-        tx_buf[i] = ((uint32_t)s << 16) | s;
-        g_ring_read = (g_ring_read + 1u) & RING_MASK;
+        int16_t s0 = g_ring[g_ring_read] >> 1;
+        int16_t s1 = g_ring[(g_ring_read + 1u) & RING_MASK] >> 1;
+
+        int16_t s_interp = (int16_t)(s0 + (int32_t)(s1 - s0) * (int32_t)phase / 125);
+        uint32_t w = ((uint32_t)(uint16_t)s_interp << 16) | (uint32_t)(uint16_t)s_interp;
+
+        tx_buf[i] = w;  /* L+R same mono sample in one stereo word */
+
+        phase += 128;
+        while (phase >= 125) {
+            phase -= 125;
+            g_ring_read = (g_ring_read + 1u) & RING_MASK;
+        }
     }
 }
 
-/* Thread pushes samples into the ring. Blocks if not enough space. */
+/* Thread pushes samples into the ring.  Caller must ensure space via
+ * ring_avail_write() before calling — watermark logic guarantees this. */
 static void ring_push(int16_t const *src, uint32_t count)
 {
-    while (count > 0) {
-        /* Busy-wait for space (should never take long). */
-        uint32_t avail;
-        do {
-            avail = ring_avail_write();
-        } while (avail == 0);
-
-        uint32_t n = avail < count ? avail : count;
-        for (uint32_t i = 0; i < n; i++) {
+    uint32_t n = count;
+    while (n > 0) {
+        uint32_t chunk = ring_avail_write();
+        if (chunk > n) chunk = n;
+        if (chunk == 0) {
+            /* Should never happen with watermarks; yield as safety valve. */
+            rt_thread_yield();
+            continue;
+        }
+        for (uint32_t i = 0; i < chunk; i++) {
             g_ring[g_ring_write] = src[i];
             g_ring_write = (g_ring_write + 1u) & RING_MASK;
         }
-        src   += n;
-        count -= n;
+        src += chunk;
+        n   -= chunk;
     }
 }
 
@@ -148,22 +179,16 @@ static void decode_thread_entry(void *arg)
     (void)arg;
     OpusDecoder *dec = (OpusDecoder *)s_dec_buf;
 
-    /* Parse the length-prefixed packet format:
-     *   uint16_le num_packets
-     *   for each packet: uint16_le len + len bytes of raw Opus data
-     */
+    /* Wire format: uint16_le num_packets, then per packet: uint16_le len + raw Opus data */
     const uint8_t *p = embedded_opus_data;
     uint16_t total_packets = (uint16_t)p[0] | ((uint16_t)p[1] << 8);
     p += 2;
 
     uint16_t pkt_idx = 0;
-
-    /* Pre-fill the ring with several decoded frames before starting I2S,
-     * so that the DMA pipeline never starves. */
     float pcm[320]; /* 20 ms @ 16 kHz */
-    uint32_t prefill_samples = RING_SIZE / 2; /* half the ring */
 
-    while (ring_avail_read() < prefill_samples && pkt_idx < total_packets) {
+    /* ---- Phase 1: pre-fill ring to HIGH_WATER before I2S starts --------- */
+    while (ring_avail_read() < RING_HIGH_WATER && pkt_idx < total_packets) {
         uint16_t pkt_len = (uint16_t)p[0] | ((uint16_t)p[1] << 8);
         p += 2;
 
@@ -171,9 +196,8 @@ static void decode_thread_entry(void *arg)
         p += pkt_len;
         pkt_idx++;
 
-        if (ret <= 0) continue; /* skip FEC/PLC/errors */
+        if (ret <= 0) continue;
 
-        /* Convert float -> int16 */
         int16_t buf[320];
         for (int i = 0; i < ret; i++) {
             float s = pcm[i] * 32768.0f;
@@ -181,23 +205,22 @@ static void decode_thread_entry(void *arg)
             if (s < -32768.0f) s = -32768.0f;
             buf[i] = (int16_t)s;
         }
-
-        /* Pad to 320 exactly if decoder returned fewer (shouldn't). */
         for (int i = ret; i < 320; i++)
             buf[i] = 0;
 
         ring_push(buf, 320);
     }
 
-    /* Main decode loop: wake on semaphore, decode next frame, push to ring. */
+    /* ---- Phase 2: main loop — water-level throttled decode -------------- */
     while (g_playing && g_sem) {
-        /* Wait for ISR to tell us there's space. */
         rt_sem_take(g_sem, RT_WAITING_FOREVER);
-
         if (!g_playing) break;
 
-        /* Decode packets while there's room for at least one frame. */
-        while (ring_avail_write() >= 320 && pkt_idx < total_packets) {
+        /* Decode frames while below high watermark and packets remain.
+         * When the ISR drains the ring below HIGH_WATER, we refill to
+         * HIGH_WATER and then stop — the consumer catches up over the
+         * next ~65 ms (H→L takes ~4 DMA callbacks). */
+        while (ring_avail_read() < RING_HIGH_WATER && pkt_idx < total_packets) {
             uint16_t pkt_len = (uint16_t)p[0] | ((uint16_t)p[1] << 8);
             p += 2;
 
@@ -220,11 +243,10 @@ static void decode_thread_entry(void *arg)
             ring_push(buf, 320);
         }
 
-        /* Loop playback if we've exhausted the data. */
+        /* Loop playback when all packets consumed. */
         if (pkt_idx >= total_packets) {
-            p = embedded_opus_data + 2; /* reset to first packet */
+            p = embedded_opus_data + 2;
             pkt_idx = 0;
-            /* Reset decoder so it doesn't carry PLC state across loops. */
             opus_decoder_init(dec, EMBEDDED_AUDIO_SAMPLE_RATE, 1);
         }
     }
@@ -258,7 +280,7 @@ bool opus_player_start(void)
     cfg.alignment    = NRF_I2S_ALIGN_LEFT;
     cfg.channels     = NRF_I2S_CHANNELS_STEREO;
     cfg.mck_setup    = NRF_I2S_MCK_32MDIV8;
-    cfg.ratio        = NRF_I2S_RATIO_256X;    /* LRCK ≈ 15.625 kHz */
+    cfg.ratio        = NRF_I2S_RATIO_256X;    /* LRCK = 15.625 kHz */
     cfg.irq_priority = 6;
 
     nrfx_err_t nrf_err = nrfx_i2s_init(&g_i2s, &cfg, i2s_tx_handler);

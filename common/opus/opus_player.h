@@ -9,7 +9,7 @@ extern "C" {
 
 /* Start Opus playback via I2S TX (D2/SDOUT pin).
  * The audio data must be in embedded_audio.h (embedded_opus_data + embedded_opus_size).
- * I2S runs at ~15.625 kHz LRCK, 16-bit, left-aligned, left channel only.
+ * I2S runs at ~15.625 kHz LRCK, 16-bit, left-aligned, stereo.
  * Returns true on success. */
 bool opus_player_start(void);
 
