@@ -1,0 +1,11 @@
+# Build output
+/build/
+
+# Generated / editor
+compile_commands.json
+.cache/
+
+# Runtime logs and scratch
+scripts/serial.log
+scripts/_*.bin
+*.bin
