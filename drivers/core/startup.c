@@ -13,6 +13,7 @@
 
 #include <stdint.h>
 #include <stdio.h>   /* printf：HardFault 现场打印 */
+#include "uart.h"    /* uart_tx_abort：打印前归零 TX 通道 */
 
 /* Symbols provided by the linker script (link.ld). */
 extern uint32_t _sidata;   /* .data load address (in RRAM)            */
@@ -127,10 +128,14 @@ void Reset_Handler(void)
  *   g_fault[1] = CFSR, [2] = HFSR, [3] = stacked PC, [4] = stacked LR
  * Spin WITHOUT wfi so the debug AP stays powered and we can always re-attach.
  *
- * 现场打印用 printf（行缓冲，\n 触发 flush → write → uart_write）。重入说明：
- * 单线程无锁；若 fault 恰好发生在 uart_write 的 DMA 忙等里，本处理器会
- * 覆写 tx_buf 重启传输并等待自己的完成——被丢弃的旧上下文反正不再返回，
- * 最坏是半行旧输出被覆盖，对故障现场打印是可接受的。 */
+ * 现场打印：先 g_fault[] 记现场（零 libc/驱动依赖，pyocd 永远可读），再
+ * uart_tx_abort() 中止可能在途的 EasyDMA 传输（STOP 不产生 END、空闲时是
+ * 空操作，把 TX 通道确定性归零），然后走正常 printf（行缓冲，\n 触发
+ * flush → write → uart_write 的"清 END→START→等 END"必然属于本次发送）。
+ * 单线程无锁，uart_write 是同步忙等（将来中断驱动会新开 API，不影响本路径）。
+ * 残余风险：fault 恰好发生在 vfprintf 内部时，bufio 静态状态被重入踩——
+ * 输出乱码有界、不死锁，且 g_fault[] 已先行记录。uart_init() 之前的 fault
+ * 会经 uart_write 的 ENABLE 守卫静默丢弃串口输出（现场仍靠 g_fault[]）。 */
 volatile uint32_t g_fault[8];
 
 __attribute__((used)) void hardfault_c(uint32_t *frame)
@@ -140,6 +145,8 @@ __attribute__((used)) void hardfault_c(uint32_t *frame)
     g_fault[2] = *(volatile uint32_t *)0xE000ED2Cu; /* HFSR */
     g_fault[3] = frame[6];                          /* stacked PC */
     g_fault[4] = frame[5];                          /* stacked LR */
+
+    uart_tx_abort();
     printf("\n!!! HARDFAULT  CFSR=0x%08x HFSR=0x%08x PC=0x%08x LR=0x%08x\n",
             g_fault[1], g_fault[2], g_fault[3], g_fault[4]);
     for (;;) {

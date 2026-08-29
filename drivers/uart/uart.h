@@ -14,4 +14,7 @@
 void uart_init(void);
 void uart_write(const void *buf, uint32_t len);
 
+/* 中止在途 TX 传输（故障现场打印前归零用，见 uart.c 注释） */
+void uart_tx_abort(void);
+
 #endif /* UART_H */

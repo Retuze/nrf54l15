@@ -57,6 +57,14 @@ void uart_write(const void *buf, uint32_t len)
     }
 }
 
+/* 中止在途 TX 传输（EasyDMA STOP：不产生 END 事件；空闲时是空操作）。
+ * 给故障现场打印用：先把 TX 通道确定性归零，再走正常发送路径
+ * （uart_write 的"清 END → START → 等 END"就必然属于本次发送）。 */
+void uart_tx_abort(void)
+{
+    UART->TASKS_DMA.TX.STOP = 1;
+}
+
 /* -------------------------------------------- picolibc stdio 落点 -- */
 /* printf 的输出最终经 drivers/core/syscalls.c 的强 write() 落到 uart_write。
  * uart_init() 之前调用 printf 会直接丢字符（uart_write 的 ENABLE 守卫），
