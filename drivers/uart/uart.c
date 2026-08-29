@@ -2,9 +2,21 @@
 #include "nrf.h"
 #include <stdarg.h>
 
+/*
+ * 控制台接线由实验 config.h 提供（include 路径经 NRF54_CONSOLE_CFG_DIR 注入，
+ * 见 drivers/CMakeLists.txt）；无 config 链时回退到默认值（仍可独立编译）。
+ */
+#include "config.h"
+#ifndef CONFIG_CONSOLE_TX_PORT
+#define CONFIG_CONSOLE_TX_PORT  1u
+#endif
+#ifndef CONFIG_CONSOLE_TX_PIN
+#define CONFIG_CONSOLE_TX_PIN   9u   /* P1.09 -> SAMD11 USB serial */
+#endif
+
 #define UART      NRF_UARTE20_S
-#define TX_PORT   1u
-#define TX_PIN    9u                 /* P1.09 -> SAMD11 USB serial */
+#define TX_PORT   CONFIG_CONSOLE_TX_PORT
+#define TX_PIN    CONFIG_CONSOLE_TX_PIN
 
 /* EasyDMA source buffer (must live in RAM). */
 static uint8_t tx_buf[256];

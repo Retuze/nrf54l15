@@ -15,24 +15,42 @@
  */
 
 #include <stdint.h>
+#include "config.h"
 #include "nrf.h"
 #include "grtc.h"
 #include "uart.h"
 #include "gatt.h"
 
 /* ---------------------------------------------------------------- LED -- */
-#define LED_MASK (1u << 0)
+/* 板头（boards/xiao_nrf54l15.h）只给端口号；LED 在 P2，映射到 54L 的
+ * 独立 GPIO2 寄存器组。换板 = 改板头 + 这里的一行映射。 */
+#define LED_REG    NRF_P2_S   /* BOARD_LED_PORT == 2 */
+#define LED_MASK   (1u << BOARD_LED_PIN)
 
 static void led_init(void)
 {
-    NRF_P2_S->PIN_CNF[0] =
+    LED_REG->PIN_CNF[BOARD_LED_PIN] =
         (GPIO_PIN_CNF_DIR_Output       << GPIO_PIN_CNF_DIR_Pos) |
         (GPIO_PIN_CNF_INPUT_Disconnect << GPIO_PIN_CNF_INPUT_Pos);
-    NRF_P2_S->DIRSET = LED_MASK;
-    NRF_P2_S->OUTSET = LED_MASK;
+    LED_REG->DIRSET = LED_MASK;
+    LED_REG->OUTSET = LED_MASK;
 }
-static void led_on(void)  { NRF_P2_S->OUTCLR = LED_MASK; }
-static void led_off(void) { NRF_P2_S->OUTSET = LED_MASK; }
+static void led_on(void)
+{
+    if (BOARD_LED_ACTIVE_LEVEL) {
+        LED_REG->OUTSET = LED_MASK;
+    } else {
+        LED_REG->OUTCLR = LED_MASK;
+    }
+}
+static void led_off(void)
+{
+    if (BOARD_LED_ACTIVE_LEVEL) {
+        LED_REG->OUTCLR = LED_MASK;
+    } else {
+        LED_REG->OUTSET = LED_MASK;
+    }
+}
 
 /* --------------------------------------------------------------- misc -- */
 static uint32_t rng_state;

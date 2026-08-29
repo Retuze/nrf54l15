@@ -1,0 +1,4 @@
+# clangd 配置：指向最近一次构建的编译数据库。
+# 多实验并存时（build/01_conn、build/02_xxx…），把这里改成当前在编的那个目录。
+CompileFlags:
+  CompilationDatabase: build/01_conn
