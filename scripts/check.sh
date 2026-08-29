@@ -42,7 +42,8 @@ nm_out = subprocess.check_output(["llvm-nm", elf], text=True)
 syms = {}
 for line in nm_out.splitlines():
     parts = line.split()
-    if len(parts) >= 3 and parts[1] in ("T", "W", "D", "R", "B", "A"):
+    # w/v/V 是小写弱符号（posix-console 的 stdout 是弱定义 w）
+    if len(parts) >= 3 and parts[1] in ("T", "W", "w", "D", "R", "B", "A", "v", "V"):
         try: syms[parts[2]] = int(parts[0], 16)
         except ValueError: pass
 

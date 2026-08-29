@@ -30,7 +30,8 @@ nrf54l15/
 │   ├── core/                # syscalls.c：picolibc 系统调用弱桩
 │   ├── grtc/                # 52 位全局实时计数器（时间基/延时）
 │   └── uart/                # UARTE20 TX 日志 + tiny printf + picolibc stdio 落点
-│                            # （printf 逐字符走 .put 回调；接线走实验 config.h）
+│                            # （posix-console 的 write(1) → 强 _write → uart_write；
+│                            #   接线走实验 config.h）
 ├── project/          # 实验工程目录，每个实验一个子目录（自包含）
 │   └── 01_conn/             # 实验 01：BLE 连接 + ATT/GATT（当前）
 │       ├── main.c  startup.c  link.ld  config.h  CMakeLists.txt
@@ -128,7 +129,8 @@ HardFault 诊断：`startup.c` 里 `g_fault[]` 记录 magic/CFSR/HFSR/PC/LR（py
   `-Dio-long-long=true` 等选项见 docs/picolibc.md），libgcc 换成自建 compiler-rt
   builtins。产物 commit 进 vendor/，clone 即开箱即用；升级工具链后用
   `scripts/build_toolchain_libs.sh` 重建。
-- **printf 双轨**：picolibc 的 printf（经 drivers/uart 的 `struct __file` 落点，
+- **printf 双轨**：picolibc 的 printf（`-Dposix-console=true`：库自带 fd 0/1/2 的
+  带缓冲 FILE，行缓冲换行即 flush，`write(1)` 由 drivers/uart 的强 `_write` 落地；
   支持 %llu/浮点）与 tiny uprintf（无状态、HardFault 里也能用）并存；
   日志可以逐步换到 printf。
 - **MDK 路由宏**：`vendor/mdk/nrf.h` 靠 `-DNRF54L15_XXAA -DNRF_APPLICATION` 选到

@@ -23,6 +23,7 @@ meson setup build-arm-cortex-m33 ~/picolibc/src \
 | `picocrt` | false | 不用 picolibc 的 crt0/启动代码——工程有自己的 `startup.c`（向量表 + 数据段拷贝 + `_set_tls` + `__libc_init_array`） |
 | `specsdir` | none | 不安装 gcc specs 文件（我们用 clang + 显式链接参数，不走 `-specs=picolibc.specs`） |
 | `io-long-long` | true | printf/scanf 支持 `%llu` 等 64 位转换（grtc 的 52 位时间戳日志要用）；代价约 +1.5K text |
+| `posix-console` | true | 库里预装 fd 0/1/2 的带缓冲 FILE（`FDEV_SETUP_POSIX`，512B 缓冲、行缓冲 `__BLBF`，换行即 flush），底层走 `write(fd)`；应用侧提供 `_write` 强实现（drivers/uart/uart.c）落地。`stdout/stdin/stderr` 是**弱符号**，应用想接管仍可给强定义 |
 
 ### 保留默认值的关键选项（meson_options.txt 全表在 `~/picolibc/src/meson_options.txt`）
 
@@ -46,7 +47,7 @@ meson setup build-arm-cortex-m33 ~/picolibc/src \
 | `io-pos-args` | false | `%2$d` 位置参数（浮点版总是带上） |
 | `io-long-double` | false | long double 支持（Cortex-M 上 long double 也 8 字节，一般不开） |
 | `printf-small-ultoa` | true | 十进制转换避开软件除法（M33 有硬件除，省空间） |
-| `posix-console` | false | 不预接线 stdin/stdout 到 fd 0/1/2——我们自己给 `struct __file` 静态样板（见 drivers/uart/uart.c），printf 逐字符走 `put` 回调 |
+| `posix-console` | **true** | 见上表：预接线 stdin/stdout/stderr 到 fd 0/1/2 的带缓冲 FILE；不开则三个流无定义，应用必须自备 `struct __file` 样板（我们以前的方案） |
 | `atomic-ungetc` | true | ungetc 用原子操作保证可重入 |
 | `fast-bufio` / `stdio-locking` | false | 缓冲 IO/文件锁——裸机单线程用不上 |
 
@@ -134,9 +135,12 @@ ninja -C build/compiler-rt-arm builtins
                  + __heap_start/__heap_end（sbrk 用）
 运行期   startup.c: 拷 .data/.tdata → 清零 tbss+bss → _set_tls(__tls_base)
                  → __libc_init_array() → main()
-stdio    drivers/uart/uart.c: struct __file 样板 + .put=uart_putchar，
-        stdout/stderr 指向它；printf 逐字符下地到 UARTE20
-系统调用 drivers/core/syscalls.c: _exit/_open/... 弱桩（有需要可强定义覆盖）
+stdio    posix-console：库里的 stdout（弱符号，带 512B 缓冲、行缓冲）——
+        printf 每行（\n）flush 到 write(1) → drivers/uart/uart.c 的强 write
+        → uart_write → UARTE20
+系统调用 picolibc 直接用 POSIX 名（write/read/lseek/close/...，只有 _exit
+        保留 newlib 下划线惯例）：drivers/core/syscalls.c 给弱桩（-1 兜底），
+        write 的强实现见 uart.c；应用可随时强定义覆盖任何一个
 ```
 
 对照 nrf52840 仓库的同一套做法（Debian picolibc + libgcc），差异只在：

@@ -32,7 +32,7 @@ meson setup "$PICO_BUILD" "$PICOLIBC_SRC" \
     --cross-file "$ROOT/scripts/picolibc-arm-cross.txt" \
     --prefix="$ROOT/vendor/picolibc/arm-none-eabi" \
     -Dmultilib=false -Dtests=false -Dpicocrt=false -Dspecsdir=none \
-    -Dio-long-long=true
+    -Dio-long-long=true -Dposix-console=true
 ninja -C "$PICO_BUILD"
 ninja -C "$PICO_BUILD" install
 
