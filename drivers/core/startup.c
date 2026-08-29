@@ -15,17 +15,21 @@
 #include <stdio.h>   /* printf：HardFault 现场打印 */
 #include "uart.h"    /* uart_tx_abort：打印前归零 TX 通道 */
 
-/* Symbols provided by the linker script (link.ld). */
+/* Symbols provided by the linker script (link.ld)。
+ * 链接器符号用法约定："有地址语义"的符号（_sidata/_sdata/...）按对象声明、
+ * 用 &取地址；"值语义"的符号（__tdata_size，其值就是尺寸）按数组声明、
+ * 用退化指针取值——反过来用会从"地址=符号值"处读内存（曾因此踩过
+ * .tdata 为空时从向量表读 0x20040000 当循环上界、拷出 RAM 顶端的 bug）。 */
 extern uint32_t _sidata;   /* .data load address (in RRAM)            */
 extern uint32_t _sdata;    /* .data start (in RAM)                    */
 extern uint32_t _edata;    /* .data end   (in RAM)                    */
 extern uint32_t _ebss;     /* .bss end                                */
 extern uint32_t _estack;   /* top of stack (end of RAM)               */
 
-/* picolibc TLS / init-array contract (same as nrf52840 的 startup) */
+/* picolibc TLS / init-array contract */
 extern uint32_t __tdata_source;  /* .tdata load address (in RRAM)     */
 extern uint32_t __tdata_start;   /* .tdata start (in RAM)             */
-extern uint32_t __tdata_size;    /* .tdata size in bytes              */
+extern char     __tdata_size[];  /* 值语义：数组首址 = .tdata 字节数  */
 extern uint32_t __bss_start;     /* = ADDR(.tbss)：清零覆盖 tbss+bss  */
 extern char     __tls_base[];    /* 静态 TLS 块基址（link.ld 提供）    */
 extern void _set_tls(void *tls);         /* picolibc                 */
@@ -100,7 +104,8 @@ void Reset_Handler(void)
     /* Copy .tdata（TLS 已初始化数据）from its RRAM image. */
     char *s = (char *)&__tdata_source;
     char *d = (char *)&__tdata_start;
-    for (uint32_t i = 0; i < __tdata_size; i++) {
+    uint32_t tsize = (uint32_t)(uintptr_t)__tdata_size;   /* 值语义符号 */
+    for (uint32_t i = 0; i < tsize; i++) {
         d[i] = s[i];
     }
 
