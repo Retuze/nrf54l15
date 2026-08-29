@@ -103,6 +103,7 @@ BLE 侧日志：`python3 scripts/serial_log.py`（串口日志），`scripts/sca
 | 实验 | 主题 | 状态 |
 |---|---|---|
 | 01_conn | BLE 连接（广告 → CONNECT_IND → 数据信道 SN/NESN + DLE + LL 过程）+ ATT/GATT 服务 | 代码就绪 · **待实板验证** |
+| 02_fault | HardFault 现场打印验证：故意触发总线错误 → g_fault[] + uart_tx_abort() 归零 TX → printf 现场行（预期 CFSR=0x00008200、HFSR=0x40000000） | 代码就绪 · **待实板验证** |
 | （待拆） | 01_blink / 02_adv / 03_rx / 04_conn … 按 nrf52840 系列拆阶段 | 计划 |
 | （待做） | tests/：gatt 纯协议 host 单测（对照 nrf52840 的 tests/run.sh） | 计划 |
 | （待做） | tools/：SVD → 寄存器头生成（gen_soc.py 迁移）、vendor/ 裁剪到只用到的芯片头 | 计划 |
