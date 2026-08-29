@@ -16,6 +16,12 @@ set(EMBED_SYSTEM_PROCESSOR   "arm")
 # （NRF54L15_XXAA = 芯片型号；NRF_APPLICATION = 应用核而非 FLPR）
 set(EMBED_CPU_DEFINES "-DNRF54L15_XXAA -DNRF_APPLICATION")
 
+# --- 共享启动/链接脚本（drivers/core/ 共用版）---
+# embedded_app() 默认用这里；实验目录里放同名 startup.c / link.ld
+# 即自动改用工程自己的版本（自定义需求改工程目录即可）。
+set(EMBED_STARTUP_SRC     "${PROJ_ROOT}/drivers/core/startup.c")
+set(EMBED_LINKER_SCRIPT   "${PROJ_ROOT}/drivers/core/nrf54l15.ld")
+
 # --- C 运行库：picolibc（自建，随仓库 vendor，开箱即用）---
 # 构建方式见 scripts/picolibc-arm-cross.txt（meson cross file）与
 # scripts/build_toolchain_libs.sh：clang --target=arm-none-eabi +

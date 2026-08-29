@@ -27,16 +27,17 @@ nrf54l15/
 ├── common/           # 平台无关协议库（不 include 任何 54L 寄存器）
 │   └── bluetooth/gatt/      # ATT/GATT 服务端（纯协议，host 可单测）
 ├── drivers/          # nRF54L15 芯片驱动（全部编成一个 libdrivers.a）
-│   ├── core/                # syscalls.c：picolibc 系统调用弱桩
+│   ├── core/                # 共用 startup.c（向量表+启动序列）与 nrf54l15.ld
+│   │                        # （RRAM/RAM 布局 + TLS 块 + 堆符号）；syscalls.c 弱桩
 │   ├── grtc/                # 52 位全局实时计数器（时间基/延时）
-│   └── uart/                # UARTE20 TX 日志 + tiny printf + picolibc stdio 落点
-│                            # （posix-console 的 write(1) → 强 _write → uart_write；
+│   └── uart/                # UARTE20 TX + picolibc stdio 落点
+│                            # （posix-console 的 write(1) → 强 write → uart_write；
 │                            #   接线走实验 config.h）
-├── project/          # 实验工程目录，每个实验一个子目录（自包含）
+├── project/          # 实验工程目录，每个实验一个子目录
 │   └── 01_conn/             # 实验 01：BLE 连接 + ATT/GATT（当前）
-│       ├── main.c  startup.c  link.ld  config.h  CMakeLists.txt
-│       # startup.c: FPU → .data/.tdata 拷贝 → bss 清零 → _set_tls → __libc_init_array
-│       # link.ld: RRAM/RAM 布局 + TLS 块（__tls_base 等）+ 堆（__heap_start/__heap_end）
+│       ├── main.c  config.h  CMakeLists.txt
+│       # startup.c/link.ld 默认共用 drivers/core/ 的共享版；实验要自定义
+│       # 就把同名文件放进本目录，embedded_app 自动优先用工程自己的版本
 ├── docs/             # picolibc.md：自建工具链库的选项与踩坑记录
 ├── scripts/          # build.sh / check.sh / flash.sh / build_toolchain_libs.sh
 │                     # + python 分析工具（serial_log 等）+ picolibc-arm-cross.txt
@@ -45,9 +46,11 @@ nrf54l15/
     └── compiler-rt/arm-none-eabi/   # libclang_rt.builtins-armhf.a（自建）
 ```
 
-约定：`common` 放与芯片无关的；`drivers` 放芯片驱动（单库）；每个实验在 `project/` 下自包含
-（`main.c`, `startup.c`, `link.ld`, `config.h`），复制目录改个名就是新实验
-（`cp -r project/01_conn project/02_xxx`）。
+约定：`common` 放与芯片无关的；`drivers` 放芯片驱动（单库，startup/链接脚本也在这共用）；
+每个实验在 `project/` 下只有 `main.c` + `config.h` + `CMakeLists.txt`，
+复制目录改个名就是新实验（`cp -r project/01_conn project/02_xxx`）。
+startup.c / link.ld 默认共用 `drivers/core/`；实验要自定义（比如改栈大小、改内存布局），
+把同名文件放进实验目录即可，`embedded_app()` 自动优先用工程自己的版本。
 
 ## 构建 & 烧录
 
@@ -108,16 +111,16 @@ BLE 侧日志：`python3 scripts/serial_log.py`（串口日志），`scripts/sca
 `common/bluetooth/ll/`（纯协议）+ `drivers/radio/`（RADIO 硬件接入），对照 nrf52840 仓库的
 `ll_pdu.c/ll_chan.c/ll_ww.c/ll_conn.c` + `ll_backend.c` 那套分层。
 
-## 启动流程（project/01_conn/startup.c，纯 C）
+## 启动流程（drivers/core/startup.c，纯 C，各实验共用）
 
 1. 使能 FPU（CPACR，CP10/CP11 全访问——编译用 `-mfloat-abi=hard`）
 2. 拷贝 `.data`（`_sidata → _sdata`）
 3. 清零 `.bss`（`_sbss`，长度到 `_ebss`）
 4. `main()`；返回后 wfi 死循环
 
-链接脚本 `link.ld` 实验内自包含：`MEMORY`（RRAM 1524K / RAM 256K）+ 分段布局 + 符号契约
-（`_estack/_sidata/_sdata/_edata/_sbss/_ebss`）。向量表用 `.isr_vector` 段落在 RRAM 0x0
-（standalone 镜像，无 MCUboot）。
+链接脚本 `drivers/core/nrf54l15.ld`（共用版）自包含：`MEMORY`（RRAM 1524K / RAM 256K）+
+分段布局 + 符号契约（`_estack/_sidata/_sdata/_edata/_sbss/_ebss` + TLS/堆符号）。
+向量表用 `.isr_vector` 段落在 RRAM 0x0（standalone 镜像，无 MCUboot）。
 
 HardFault 诊断：`startup.c` 里 `g_fault[]` 记录 magic/CFSR/HFSR/PC/LR（pyOCD 可读），
 配合 UART 打印——调试 BLE 时序时非常有用。

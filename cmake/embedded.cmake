@@ -3,11 +3,29 @@
 #
 # 用法（project/<name>/CMakeLists.txt）：
 #   include(${PROJ_ROOT}/cmake/embedded.cmake)
-#   add_executable(test main.c startup.c)
-#   embedded_app(test ${CMAKE_CURRENT_SOURCE_DIR}/link.ld)
+#   add_executable(test main.c)     # 只列应用本体
+#   embedded_app(test)
+#
+# 启动/链接自动装配：默认用 targets 文件里的共享版
+# （EMBED_STARTUP_SRC / EMBED_LINKER_SCRIPT，drivers/core/）；
+# 实验目录里放同名 startup.c / link.ld 即自动改用工程自己的版本。
 
-function(embedded_app app_name linker_script)
+function(embedded_app app_name)
   target_compile_options(${app_name} PRIVATE -Os -Wall -Wextra)
+
+  # 启动文件与链接脚本：工程目录优先，否则共享版
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/startup.c")
+    set(_startup "${CMAKE_CURRENT_SOURCE_DIR}/startup.c")
+  else()
+    set(_startup "${EMBED_STARTUP_SRC}")
+  endif()
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/link.ld")
+    set(_ld "${CMAKE_CURRENT_SOURCE_DIR}/link.ld")
+  else()
+    set(_ld "${EMBED_LINKER_SCRIPT}")
+  endif()
+  target_sources(${app_name} PRIVATE ${_startup})
+  set_target_properties(${app_name} PROPERTIES LINK_DEPENDS ${_ld})
 
   # 有 libc 目标（targets 文件定义了 EMBED_PICOLIBC_BASE）时提供头/库/搜索路径。
   # libc/libm/编译器辅助库（clang builtins 替代 libgcc）必须排在对象文件之后
@@ -20,7 +38,7 @@ function(embedded_app app_name linker_script)
   # 自包含链接脚本 -T 显式指定；--gc-sections 剔未引用段
   target_link_options(${app_name} PRIVATE
     -nostdlib -nostartfiles
-    -T${linker_script}
+    -T${_ld}
     -Wl,--gc-sections
     -Wl,-Map,${CMAKE_BINARY_DIR}/${app_name}.map
   )

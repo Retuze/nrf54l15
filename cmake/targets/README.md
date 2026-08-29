@@ -19,6 +19,9 @@
 include(${PROJ_ROOT}/cmake/targets/nrf54l15.cmake)
 set(CMAKE_TOOLCHAIN_FILE ${PROJ_ROOT}/cmake/toolchain.cmake CACHE STRING "" FORCE)
 project(test C)
+
+# targets 文件还提供共享启动/链接：EMBED_STARTUP_SRC / EMBED_LINKER_SCRIPT
+# （drivers/core/），embedded_app() 自动装配；实验目录放同名文件即覆盖。
 ```
 
 新芯片 = 复制本目录一个文件、改上面参数，工程里换 include 路径。

@@ -131,10 +131,10 @@ ninja -C build/compiler-rt-arm builtins
 ```
 编译期   targets/nrf54l15.cmake: -ftls-model=local-exec
         embedded.cmake: -nostdlib -nostartfiles -lc -lm -lclang_rt.builtins
-链接期   link.ld: .tdata/.tbss + __tls_base/__tls_align/__arm32_tls_tcb_offset
-                 + __heap_start/__heap_end（sbrk 用）
-运行期   startup.c: 拷 .data/.tdata → 清零 tbss+bss → _set_tls(__tls_base)
-                 → __libc_init_array() → main()
+链接期   drivers/core/nrf54l15.ld: .tdata/.tbss + __tls_base/__tls_align/
+                 __arm32_tls_tcb_offset + __heap_start/__heap_end（sbrk 用）
+运行期   drivers/core/startup.c: 拷 .data/.tdata → 清零 tbss+bss →
+                 _set_tls(__tls_base) → __libc_init_array() → main()
 stdio    posix-console：库里的 stdout（弱符号，带 512B 缓冲、行缓冲）——
         printf 每行（\n）flush 到 write(1) → drivers/uart/uart.c 的强 write
         → uart_write → UARTE20
