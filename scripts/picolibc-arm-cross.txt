@@ -1,0 +1,18 @@
+# picolibc 交叉配置：arm-none-eabi / Cortex-M33 硬浮点（nRF54L15 应用核）
+# 编译参数与工程 cmake/targets/nrf54l15.cmake 的 EMBED_CPU_FLAGS 保持一致：
+#   -mcpu=cortex-m33 -mfloat-abi=hard -mfpu=fpv5-sp-d16 -ftls-model=local-exec
+# 注意：机器文件的数组只能写在一行内。
+[binaries]
+c = ['clang', '--target=arm-none-eabi', '-mcpu=cortex-m33', '-mfloat-abi=hard', '-mfpu=fpv5-sp-d16', '-ftls-model=local-exec', '-fno-pic']
+ar = 'llvm-ar'
+nm = 'llvm-nm'
+strip = 'llvm-strip'
+
+[built-in options]
+c_link_args = ['-fuse-ld=lld']
+
+[host_machine]
+system = 'none'
+cpu_family = 'arm'
+cpu = 'cortex-m33'
+endian = 'little'

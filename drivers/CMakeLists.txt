@@ -2,6 +2,7 @@
 # 实验工程只需 target_link_libraries(<app> PRIVATE drivers <common 库名>)
 
 add_library(drivers STATIC
+  core/syscalls.c
   grtc/grtc.c
   uart/uart.c)
 # 驱动头 + vendor（nrf.h 等 Nordic MDK/CMSIS 头）经 PUBLIC 传给应用
@@ -10,6 +11,10 @@ target_include_directories(drivers PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/uart
   ${PROJ_ROOT}/vendor/mdk
   ${PROJ_ROOT}/vendor/cmsis)
+# uart.c 用了 picolibc 头（stdio.h 的 struct __file）；无 libc 目标时跳过
+if(DEFINED EMBED_PICOLIBC_BASE AND NOT EMBED_PICOLIBC_BASE STREQUAL "")
+  target_include_directories(drivers SYSTEM PRIVATE ${EMBED_PICOLIBC_BASE}/include)
+endif()
 # uart.c 的"控制台接线"：由实验声明配置链（目录 + 板库）——config.h 与
 # 它 include 的板头在 uart.c 编译时可见（含 CONFIG_CONSOLE_TX_* 宏）
 if(DEFINED NRF54_CONSOLE_CFG_DIR)

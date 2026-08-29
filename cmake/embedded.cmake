@@ -10,10 +10,11 @@ function(embedded_app app_name linker_script)
   target_compile_options(${app_name} PRIVATE -Os -Wall -Wextra)
 
   # 有 libc 目标（targets 文件定义了 EMBED_PICOLIBC_BASE）时提供头/库/搜索路径。
-  # libc/libm/libgcc 必须排在对象文件之后（target_link_libraries 自动保证顺序）
+  # libc/libm/编译器辅助库（clang builtins 替代 libgcc）必须排在对象文件之后
+  # （target_link_libraries 自动保证顺序：libc 引用的 __aeabi_* 在最后解析）
   if(DEFINED EMBED_PICOLIBC_BASE AND NOT EMBED_PICOLIBC_BASE STREQUAL "")
     target_include_directories(${app_name} SYSTEM PRIVATE ${EMBED_PICOLIBC_BASE}/include)
-    target_link_libraries(${app_name} PRIVATE c m gcc)
+    target_link_libraries(${app_name} PRIVATE c m ${EMBED_COMPILER_RT_LIB})
   endif()
 
   # 自包含链接脚本 -T 显式指定；--gc-sections 剔未引用段
@@ -27,7 +28,6 @@ function(embedded_app app_name linker_script)
   if(DEFINED EMBED_PICOLIBC_BASE AND NOT EMBED_PICOLIBC_BASE STREQUAL "")
     target_link_options(${app_name} PRIVATE
       -L${EMBED_PICOLIBC_BASE}/lib
-      -L${EMBED_LIBGCC_DIR}
     )
   endif()
 

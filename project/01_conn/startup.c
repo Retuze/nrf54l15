@@ -3,23 +3,32 @@
  *
  * Responsibilities:
  *   1. Provide the vector table (initial SP + Reset + core exceptions + IRQs).
- *   2. On reset: enable the FPU, copy .data from RRAM to RAM, zero .bss,
- *      then jump to main().
+ *   2. On reset: enable the FPU, copy .data/.tdata from RRAM to RAM, zero
+ *      .tbss+.bss, install the picolibc TLS block (_set_tls), run static
+ *      constructors (__libc_init_array), then jump to main().
  *
- * No libc, no SystemInit magic: the SoC boots on its internal oscillator,
- * which is enough for GPIO. Clock/HFXO setup is done later, per-experiment.
+ * No SystemInit magic: the SoC boots on its internal oscillator, which is
+ * enough for GPIO. Clock/HFXO setup is done later, per-experiment.
  */
 
 #include <stdint.h>
 #include "uart.h"
 
-/* Symbols provided by the linker script (nrf54l15_cpuapp.ld). */
+/* Symbols provided by the linker script (link.ld). */
 extern uint32_t _sidata;   /* .data load address (in RRAM)            */
 extern uint32_t _sdata;    /* .data start (in RAM)                    */
 extern uint32_t _edata;    /* .data end   (in RAM)                    */
-extern uint32_t _sbss;     /* .bss start                              */
 extern uint32_t _ebss;     /* .bss end                                */
 extern uint32_t _estack;   /* top of stack (end of RAM)               */
+
+/* picolibc TLS / init-array contract (same as nrf52840 的 startup) */
+extern uint32_t __tdata_source;  /* .tdata load address (in RRAM)     */
+extern uint32_t __tdata_start;   /* .tdata start (in RAM)             */
+extern uint32_t __tdata_size;    /* .tdata size in bytes              */
+extern uint32_t __bss_start;     /* = ADDR(.tbss)：清零覆盖 tbss+bss  */
+extern char     __tls_base[];    /* 静态 TLS 块基址（link.ld 提供）    */
+extern void _set_tls(void *tls);         /* picolibc                 */
+extern void __libc_init_array(void);     /* picolibc                 */
 
 int  main(void);
 void Reset_Handler(void);
@@ -87,11 +96,23 @@ void Reset_Handler(void)
         *dst++ = *src++;
     }
 
-    /* Zero the .bss section. */
-    dst = &_sbss;
+    /* Copy .tdata（TLS 已初始化数据）from its RRAM image. */
+    char *s = (char *)&__tdata_source;
+    char *d = (char *)&__tdata_start;
+    for (uint32_t i = 0; i < __tdata_size; i++) {
+        d[i] = s[i];
+    }
+
+    /* Zero .tbss + .bss（__bss_start = ADDR(.tbss)）. */
+    dst = &__bss_start;
     while (dst < &_ebss) {
         *dst++ = 0u;
     }
+
+    /* Install the picolibc TLS block pointer (errno/reent 都靠它），
+     * then run static constructors. */
+    _set_tls(__tls_base);
+    __libc_init_array();
 
     (void)main();
 

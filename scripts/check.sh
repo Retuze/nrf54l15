@@ -46,9 +46,13 @@ for line in nm_out.splitlines():
         try: syms[parts[2]] = int(parts[0], 16)
         except ValueError: pass
 
-# nRF54L15 符号契约（link.ld + startup.c）：无 libc 路线，没有 TLS 符号
+# nRF54L15 符号契约（link.ld + startup.c + picolibc）：
+# 数据段拷贝/TLS/堆符号 + picolibc 初始化入口（_set_tls/__libc_init_array）
 required = ["_estack", "_sidata", "_sdata", "_edata", "_sbss", "_ebss",
-            "Reset_Handler", "HardFault_Handler", "main"]
+            "__tdata_start", "__tdata_source", "__tdata_size", "__tls_base",
+            "__tls_size", "__bss_start", "__heap_start", "__heap_end",
+            "Reset_Handler", "HardFault_Handler", "main",
+            "_set_tls", "__libc_init_array", "stdout"]
 missing = [s for s in required if s not in syms]
 if missing:
     print("FAIL: 缺少关键符号:", missing); sys.exit(1)

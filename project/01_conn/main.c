@@ -15,6 +15,8 @@
  */
 
 #include <stdint.h>
+#include <stdlib.h>
+#include <stdio.h>
 #include "config.h"
 #include "nrf.h"
 #include "grtc.h"
@@ -637,6 +639,13 @@ int main(void)
     build_scan_rsp();
     gatt_init();
     radio_common();
+
+    /* picolibc 冒烟：验证 stdio 落点（uart） + malloc 堆（sbrk） + TLS errno
+     * （%llu 需要 picolibc 构建时的 -Dio-long-long=true） */
+    void *smoke = malloc(64);
+    printf("picolibc ready: grtc=%llu us, malloc=%p\n",
+           (unsigned long long)grtc_now(), smoke);
+    free(smoke);
 
     rng_state = (uint32_t)grtc_now() | 1u;
     uprintf("\n=== 54L-GATT connectable + scannable ===\n");

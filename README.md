@@ -7,9 +7,12 @@
 
 - 编译器：宿主 **clang**（本机为 clang 22.1.8），按 `--target=arm-none-eabi` 交叉编译
 - 链接器：**lld**（随 clang 同版本安装）
-- C 库：**无**（`-nostdlib` 路线；printf 是 `drivers/uart` 自带的 tiny printf）
+- C 库：**picolibc**（自建，随仓库 vendor，clone 即开箱即用；不用 apt/gcc-arm-none-eabi）
+- 编译器辅助库：**clang builtins**（自建 compiler-rt，同样随仓库 vendor，替代 libgcc）
 - 构建：**CMake + Ninja**
 - 烧录：**pyOCD**（板载 SAMD11 CMSIS-DAP，target `nrf54l`，无需 SEGGER J-Link）
+
+工具链库的构建参数与重建方式见 **docs/picolibc.md** 和 `scripts/build_toolchain_libs.sh`。
 
 ## 目录结构
 
@@ -24,13 +27,21 @@ nrf54l15/
 ├── common/           # 平台无关协议库（不 include 任何 54L 寄存器）
 │   └── bluetooth/gatt/      # ATT/GATT 服务端（纯协议，host 可单测）
 ├── drivers/          # nRF54L15 芯片驱动（全部编成一个 libdrivers.a）
+│   ├── core/                # syscalls.c：picolibc 系统调用弱桩
 │   ├── grtc/                # 52 位全局实时计数器（时间基/延时）
-│   └── uart/                # UARTE20 TX 日志 + tiny printf（接线走实验 config.h）
+│   └── uart/                # UARTE20 TX 日志 + tiny printf + picolibc stdio 落点
+│                            # （printf 逐字符走 .put 回调；接线走实验 config.h）
 ├── project/          # 实验工程目录，每个实验一个子目录（自包含）
 │   └── 01_conn/             # 实验 01：BLE 连接 + ATT/GATT（当前）
 │       ├── main.c  startup.c  link.ld  config.h  CMakeLists.txt
-├── scripts/          # build.sh / check.sh / flash.sh + python 分析工具（serial_log 等）
-└── vendor/           # Nordic MDK + CMSIS 头（nrf.h 寄存器视图；全量保留，裁剪待做）
+│       # startup.c: FPU → .data/.tdata 拷贝 → bss 清零 → _set_tls → __libc_init_array
+│       # link.ld: RRAM/RAM 布局 + TLS 块（__tls_base 等）+ 堆（__heap_start/__heap_end）
+├── docs/             # picolibc.md：自建工具链库的选项与踩坑记录
+├── scripts/          # build.sh / check.sh / flash.sh / build_toolchain_libs.sh
+│                     # + python 分析工具（serial_log 等）+ picolibc-arm-cross.txt
+└── vendor/           # Nordic MDK + CMSIS 头（寄存器视图）+ 自建工具链库
+    ├── picolibc/arm-none-eabi/      # libc.a/libm.a + 头（自建，1.8.12）
+    └── compiler-rt/arm-none-eabi/   # libclang_rt.builtins-armhf.a（自建）
 ```
 
 约定：`common` 放与芯片无关的；`drivers` 放芯片驱动（单库）；每个实验在 `project/` 下自包含
@@ -112,10 +123,15 @@ HardFault 诊断：`startup.c` 里 `g_fault[]` 记录 magic/CFSR/HFSR/PC/LR（py
 
 ## 决策记录
 
-- **无 libc**：54L 目前不需要 malloc/stdio 全家桶，`-nostdlib` + 自带 tiny printf 足够。
-  将来要 picolibc 时，在 `cmake/targets/nrf54l15.cmake` 补 `EMBED_PICOLIBC_BASE` /
-  `EMBED_LIBGCC_DIR` 两行即可（`embedded.cmake` 检测到会自动衔接 c/m/gcc）。
+- **picolibc 自建 + 随仓库分发**：不再依赖 apt 的 `picolibc-arm-none-eabi` 和
+  `gcc-arm-none-eabi`——libc 用 meson cross 构建（clang+lld，cortex-m33 hard，
+  `-Dio-long-long=true` 等选项见 docs/picolibc.md），libgcc 换成自建 compiler-rt
+  builtins。产物 commit 进 vendor/，clone 即开箱即用；升级工具链后用
+  `scripts/build_toolchain_libs.sh` 重建。
+- **printf 双轨**：picolibc 的 printf（经 drivers/uart 的 `struct __file` 落点，
+  支持 %llu/浮点）与 tiny uprintf（无状态、HardFault 里也能用）并存；
+  日志可以逐步换到 printf。
 - **MDK 路由宏**：`vendor/mdk/nrf.h` 靠 `-DNRF54L15_XXAA -DNRF_APPLICATION` 选到
   54L 应用核的头，放在 targets 文件的 `EMBED_CPU_DEFINES`。
-- **vendor 全量保留**：MDK 含全部 nRF 芯片头（~95M），当前只用到 54L；
+- **vendor/mdk 全量保留**：MDK 含全部 nRF 芯片头（~95M），当前只用到 54L；
   裁剪留给 tools/ 任务。

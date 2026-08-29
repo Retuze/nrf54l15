@@ -1,6 +1,7 @@
 #include "uart.h"
 #include "nrf.h"
 #include <stdarg.h>
+#include <stdio.h>   /* picolibc：struct __file（printf 落点） */
 
 /*
  * 控制台接线由实验 config.h 提供（include 路径经 NRF54_CONSOLE_CFG_DIR 注入，
@@ -57,6 +58,26 @@ void uart_write(const void *buf, uint32_t len)
     while (UART->EVENTS_DMA.TX.END == 0) {
     }
 }
+
+/* -------------------------------------------- picolibc stdio 落点 -- */
+/* printf 家族的每个字符最终走 uart_putchar -> uart_write。tinystdio 无缓冲、
+ * 无锁，异常上下文里也能用。uart_init() 之前调用 printf 会直接丢字符
+ * （uart_write 的 ENABLE 守卫），所以控制台初始化要放在第一条 printf 前。 */
+
+static int uart_putchar(char c, struct __file *f)
+{
+    (void)f;
+    uint8_t b = (uint8_t)c;
+    uart_write(&b, 1);
+    return 0;
+}
+
+static struct __file uart_file = {
+    .put = uart_putchar,   /* get/flush/read/write 用不上，保持 NULL */
+};
+
+struct __file *const stdout = &uart_file;
+struct __file *const stderr = &uart_file;
 
 /* ------------------------------------------------------- tiny printf -- */
 
