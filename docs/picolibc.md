@@ -136,11 +136,12 @@ ninja -C build/compiler-rt-arm builtins
 运行期   drivers/core/startup.c: 拷 .data/.tdata → 清零 tbss+bss →
                  _set_tls(__tls_base) → __libc_init_array() → main()
 stdio    posix-console：库里的 stdout（弱符号，带 512B 缓冲、行缓冲）——
-        printf 每行（\n）flush 到 write(1) → drivers/uart/uart.c 的强 write
+        printf 每行（\n）flush 到 write(1) → drivers/core/syscalls.c 的强 write
         → uart_write → UARTE20
 系统调用 picolibc 直接用 POSIX 名（write/read/lseek/close/...，只有 _exit
-        保留 newlib 下划线惯例）：drivers/core/syscalls.c 给弱桩（-1 兜底），
-        write 的强实现见 uart.c；应用可随时强定义覆盖任何一个
+        保留 newlib 下划线惯例）。落点统一在 drivers/core/syscalls.c：
+        有后端的给强实现（write→UART），无后端的弱桩返回 -1（POSIX 的
+        "不支持"语义）；应用可随时强定义覆盖任何一个
 ```
 
 对照 nrf52840 仓库的同一套做法（Debian picolibc + libgcc），差异只在：

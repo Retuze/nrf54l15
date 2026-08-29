@@ -28,10 +28,11 @@ nrf54l15/
 │   └── bluetooth/gatt/      # ATT/GATT 服务端（纯协议，host 可单测）
 ├── drivers/          # nRF54L15 芯片驱动（全部编成一个 libdrivers.a）
 │   ├── core/                # 共用 startup.c（向量表+启动序列）与 nrf54l15.ld
-│   │                        # （RRAM/RAM 布局 + TLS 块 + 堆符号）；syscalls.c 弱桩
+│   │                        # （RRAM/RAM 布局 + TLS 块 + 堆符号）；syscalls.c：
+│   │                        #   POSIX 系统调用落点（强 write → uart_write，
+│   │                        #   其余无后端操作弱桩 -1，应用可强定义覆盖）
 │   ├── grtc/                # 52 位全局实时计数器（时间基/延时）
-│   └── uart/                # UARTE20 TX + picolibc stdio 落点
-│                            # （posix-console 的 write(1) → 强 write → uart_write；
+│   └── uart/                # UARTE20 TX 芯片驱动（纯 uart_init/uart_write；
 │                            #   接线走实验 config.h）
 ├── project/          # 实验工程目录，每个实验一个子目录
 │   └── 01_conn/             # 实验 01：BLE 连接 + ATT/GATT（当前）
