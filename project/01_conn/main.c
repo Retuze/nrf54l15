@@ -648,7 +648,7 @@ int main(void)
     free(smoke);
 
     rng_state = (uint32_t)grtc_now() | 1u;
-    uprintf("\n=== 54L-GATT connectable + scannable ===\n");
+    printf("\n=== 54L-GATT connectable + scannable ===\n");
 
     uint32_t adv_events = 0;
     for (;;) {
@@ -663,27 +663,27 @@ int main(void)
             g_rxpdu_n = 0; g_tx_done = 0; g_dbg_gap = 0;
             g_tx_timeouts = 0; g_dbg_maxrsp = 0;
             run_connection(t_ci_end);          /* blocks until link lost */
-            uprintf("\n[conn] AA=0x%08x int=%uus hop=%u -> events=%u hits=%u tx=%u\n",
+            printf("\n[conn] AA=0x%08x int=%uus hop=%u -> events=%u hits=%u tx=%u\n",
                     conn.aa, conn.interval_us, conn.hop, g_conn_events, g_conn_hits, g_tx_done);
-            uprintf("[conn] mtu=%u txoct=%u maxrsp=%u tx_timeouts=%u\n",
+            printf("[conn] mtu=%u txoct=%u maxrsp=%u tx_timeouts=%u\n",
                     gatt_dbg_mtu(), gatt_dbg_txoct(), g_dbg_maxrsp, g_tx_timeouts);
-            uprintf("[conn] rx_end->tx_end gap=%uus (expect ~230)\n", g_dbg_gap);
+            printf("[conn] rx_end->tx_end gap=%uus (expect ~230)\n", g_dbg_gap);
             uint32_t cnt = g_rxpdu_n < 6u ? g_rxpdu_n : 6u;
             uint32_t base = g_rxpdu_n - cnt;    /* oldest still-kept index */
             for (uint32_t j = 0; j < cnt; j++) {
                 uint32_t slot = (base + j) % 6u;
                 uint32_t llid = g_rxpdu[slot][0] & 0x3u;
                 uint32_t len = g_rxpdu[slot][1];
-                uprintf("  rx[-%u] LLID=%u len=%u:", cnt - j, llid, len);
+                printf("  rx[-%u] LLID=%u len=%u:", cnt - j, llid, len);
                 for (uint32_t k = 0; k < len + 2u && k < 32u; k++)
-                    uprintf(" %02x", g_rxpdu[slot][k]);
-                uprintf("\n");
+                    printf(" %02x", g_rxpdu[slot][k]);
+                printf("\n");
             }
             continue;
         }
 
         if ((++adv_events & 127u) == 0)
-            uprintf("[adv] events=%u rx_ok=%u rx_err=%u\n", adv_events, g_rx_ok, g_rx_err);
+            printf("[adv] events=%u rx_ok=%u rx_err=%u\n", adv_events, g_rx_ok, g_rx_err);
 
         uint32_t delay = 20000u + (rng_next() % 10000u);
         uint64_t s = grtc_now();

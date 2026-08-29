@@ -129,10 +129,10 @@ HardFault 诊断：`startup.c` 里 `g_fault[]` 记录 magic/CFSR/HFSR/PC/LR（py
   `-Dio-long-long=true` 等选项见 docs/picolibc.md），libgcc 换成自建 compiler-rt
   builtins。产物 commit 进 vendor/，clone 即开箱即用；升级工具链后用
   `scripts/build_toolchain_libs.sh` 重建。
-- **printf 双轨**：picolibc 的 printf（`-Dposix-console=true`：库自带 fd 0/1/2 的
-  带缓冲 FILE，行缓冲换行即 flush，`write(1)` 由 drivers/uart 的强 `_write` 落地；
-  支持 %llu/浮点）与 tiny uprintf（无状态、HardFault 里也能用）并存；
-  日志可以逐步换到 printf。
+- **printf 统一**：picolibc 的 printf（`-Dposix-console=true`：库自带 fd 0/1/2 的
+  带缓冲 FILE，行缓冲换行即 flush，`write(1)` 由 drivers/uart 的强 `write` 落地；
+  支持 %llu/浮点）。原 tiny uprintf 已删（main.c 全部换 printf）；HardFault 现场
+  打印也用 printf——单线程无锁、重入最坏覆盖半行旧输出，可接受（见 startup.c 注释）。
 - **MDK 路由宏**：`vendor/mdk/nrf.h` 靠 `-DNRF54L15_XXAA -DNRF_APPLICATION` 选到
   54L 应用核的头，放在 targets 文件的 `EMBED_CPU_DEFINES`。
 - **vendor/mdk 全量保留**：MDK 含全部 nRF 芯片头（~95M），当前只用到 54L；
