@@ -161,7 +161,7 @@ source-based coverage（报告阶段不读源文件）。
 | 02_fault | HardFault 现场打印验证：故意触发总线错误 → g_fault[] + console_tx_abort() 归零 TX → printf 现场行（预期 CFSR=0x00008200、HFSR=0x40000000） | **实板验证通过**（2026-08-31） |
 | 03_conn_log | 连接态实时日志（方案 A）：common/log + uart_tx + ll on_conn_event 钩子，逐事件 "evt=N ok/miss ch=X"（全工程 printf 仅 HardFault） | **实板验证通过**（2026-08-31） |
 | 04_async_ll | 事件化 LL（方案 B）：GRTC 闹钟定锚/窗口超时 + RADIO IRQ 收发，连接态全在 IRQ，主循环解放（连接期间心跳照走，spins≈396k/s）。协议逻辑与同步引擎共享（conn_begin/conn_event_setup/conn_reply），ll_async_start 即开即返。已知项：IRQ 路径构建预算更紧,tx_timeouts 略高于同步版（重传兜底,零丢包）,根治待 DPPI 硬件定时 TXEN | **实板验证通过**（2026-08-31，PC 零丢失 152/152） |
-| 07_adv_scan | LE 双角色第一步（计划）：广播 + 扫描交替——事件队列调度器雏形 + scan_sm 被动扫描，验证碰撞让步 | 计划 |
+| 07_adv_scan | LE 双角色第一步：ll_sched 时间片调度器雏形（(t_start,prio) 选择 + 窗口重叠低优让步计数）+ ll_scan 被动扫描（AdvA 去重设备表 + AD 名字提取）。两种调度参数：谐波打包（周期整数倍+相位错开=构造性零碰撞,默认）与碰撞观测（DUO_COLLIDE_DEMO,~49% 让步率验证机制）。CONNECT_IND 切 04 异步引擎,断链自动恢复双角色 | **实板验证通过**（2026-08-31,扫到 16 环境设备含名字;谐波配置 scan 让步 0） |
 | 08_central_conn | central 侧连接（计划）：扫描 → 收 ADV → 发 CONNECT_IND → 主机 anchor 时序 + WinOffset 相位避碰 | 计划 |
 | 09_multi_role | 多连接/多角色完整调度（计划）：参数避碰 + 优先级让步 + 多 conn 实例 | 计划 |
 | 05_proto | 应用协议固件接线：gatt 0xFFF1 写回调+通知队列 + proto 挂载，GET→全量 REPORT(ACK_REQ 超时重发)/SET{TIME}/ACK（fw 侧完整语义） | **实板验证通过**（2026-08-31） |

@@ -48,6 +48,14 @@ target_include_directories(test_proto PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${CMAKE_CURRENT_SOURCE_DIR}/../common/proto)
 
-foreach(t test_gatt test_ll test_ring test_log test_cobs test_proto)
+add_executable(test_sched
+  sched_test.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/../common/bluetooth/ll/sched.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/../common/bluetooth/ll/scan.c)
+target_include_directories(test_sched PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${CMAKE_CURRENT_SOURCE_DIR}/../common/bluetooth/ll)
+
+foreach(t test_gatt test_ll test_ring test_log test_cobs test_proto test_sched)
   target_compile_options(${t} PRIVATE -Wall -Wextra)
 endforeach()

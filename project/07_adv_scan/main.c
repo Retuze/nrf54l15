@@ -1,16 +1,16 @@
 /*
- * 04_async_ll — 事件化链路层（方案 B）：连接态完全由 IRQ 驱动，主循环解放。
+ * 07_adv_scan — LE 双角色第一步：广播 + 被动扫描交替。
  *
- * 与 01_conn 的区别只有一个：CONNECT_IND 之后不再调阻塞的 ll_conn_run，
- * 而是 ll_async_start——连接事件由 GRTC 闹钟（锚点/窗口超时）与 RADIO IRQ
- * （收包/发完）推进，全部在中断上下文；主循环同时打 1s 心跳并累计空转
- * 次数，串口上"连接期间心跳照走"就是解放的直接证据。
+ * 一个 radio 两件事：ll_sched（时间片调度器雏形）在时间轴上排布
+ *   - adv 槽（prio 1）：每 ~60ms 一次 3 通道 ADV_IND sweep（保持可连接
+ *     可扫描——手机侧与 05 无差别）
+ *   - scan 槽（prio 2）：每 100ms 开一个 30ms 被动扫描窗（37/38/39 轮转），
+ *     收环境广播进设备表
+ * 窗口重叠时低优先级让步（yields 计数）——碰撞行为可观测，正是本实验
+ * 要验证的调度器雏形语义。CONNECT_IND 到来则切 04 的异步连接引擎，
+ * 连接期间调度暂停（主循环打心跳），断链自动恢复双角色。
  *
- * 接线（较 01_conn 新增）：
- *   ops.alarm_set/alarm_cancel  = drivers/time 的 GRTC CC 闹钟（LL 占通道 0/1）
- *   ops.radio_rx_arm/reply_arm  = drivers/radio 异步 API
- *   radio_irq_init(trampoline)  → ll_async_on_radio_rx / _tx
- *   断链回调（IRQ 上下文）只置 flag，统计打印回主循环做。
+ * 串口输出：~2s 一行 [duo] 调度统计 + 环境设备表增量。
  */
 
 #include <stdint.h>
@@ -22,6 +22,8 @@
 #include "clock.h"
 #include "radio.h"
 #include "ll.h"
+#include "sched.h"
+#include "scan.h"
 #include "gatt.h"
 #include "proto.h"
 #include "log.h"
@@ -42,8 +44,6 @@ static uint32_t rng_next(void)
     rng_state = x; return x;
 }
 
-/* F2:E0:D0:C0:B0:A0（与 05_proto 一致）：曾用旧地址被 iOS 系统级
- * 自动回连无限占线（占线期不广播=谁都扫不到）,换地址甩掉。 */
 static const uint8_t OUR_ADDR[6] = { 0xA0, 0xB0, 0xC0, 0xD0, 0xE0, 0xF2 };
 
 /* ---------------------------------- 应用协议（与 05_proto 同款接线；
@@ -222,7 +222,7 @@ static void on_conn_event_cb(uint32_t counter, int crc_ok, uint32_t ch)
     }
 }
 
-/* ------------------------------------------ 异步引擎的 IRQ 桥接 -- */
+/* ------------------------------------------ 异步连接引擎桥接（同 04） -- */
 static volatile int g_connected;
 
 static void radio_evt_trampoline(int is_rx, uint64_t t_addr, uint64_t t_end,
@@ -237,10 +237,9 @@ static void radio_evt_trampoline(int is_rx, uint64_t t_addr, uint64_t t_end,
 
 static void on_disconnect_cb(void)
 {
-    g_connected = 0;                /* IRQ 上下文：只置 flag，打印回主循环 */
+    g_connected = 0;
 }
 
-/* -------------------------------------------- 驱动 → LL 的 ops 接线 -- */
 static const ll_ops_t OPS = {
     .now_us   = time_now_us,
     .delay_us = time_delay_us,
@@ -258,17 +257,16 @@ static const ll_ops_t OPS = {
     .led        = led_set,
     .on_conn_event   = on_conn_event_cb,
     .att_notify_pull = att_notify_pull,
-    /* 异步能力（04 的主角） */
-    .alarm_set      = time_alarm_set,
-    .alarm_cancel   = time_alarm_cancel,
-    .radio_rx_arm   = radio_rx_arm,
+    .alarm_set       = time_alarm_set,
+    .alarm_cancel    = time_alarm_cancel,
+    .radio_rx_arm    = radio_rx_arm,
     .radio_reply_arm = radio_reply_arm,
 };
 
 /* ---------------------------------------------------------------- main -- */
 static const uart_cfg_t console_cfg = {
     .tx_pin = GPIO_PIN(BOARD_CONSOLE_TX_PORT, BOARD_CONSOLE_TX_PIN),
-    .rx_pin = UART_PIN_NONE,            /* 板载 SAMD11 桥只接了 TX */
+    .rx_pin = UART_PIN_NONE,
     .baud = UART_BAUD_115200,
     .fmt = UART_8N1,
     .irq_prio = 0,
@@ -280,7 +278,7 @@ int main(void)
     led_set(0);
     console_init(UARTE20, &console_cfg);
     console_log_init();
-    clock_hfxo_start();
+    int hfxo_rc = clock_hfxo_start();
     time_init();
     radio_init();
     radio_irq_init(radio_evt_trampoline);
@@ -290,75 +288,99 @@ int main(void)
     ll_init(OUR_ADDR);
 
     rng_state = (uint32_t)time_now_us() | 1u;
-    log_puts("\n=== 04_async_ll: IRQ-driven connection, free main loop ===\n");
+    log_printf("\n=== 07_adv_scan: dual-role adv + passive scan (hfxo rc=%d) ===\n",
+               hfxo_rc);
 
     ll_conn_t conn;
     ll_stats_t st;
     ll_adv_stats_t ast = { 0 };
-    uint32_t adv_events = 0;
+    ll_scan_stats_t sst;
+    for (uint32_t i = 0; i < sizeof(sst); i++) ((uint8_t *)&sst)[i] = 0;
+
+    /* 调度参数两种玩法（BUILD 时选）：
+     * 碰撞观测（默认关）：adv 60ms / scan 100ms——非谐波周期,相位滑移,
+     *   碰撞率 ≈ (30+4)/60 ≈ 57%,让步计数持续增长,验证让步机制。
+     * 谐波打包（默认开）：scan 周期取 adv 的整数倍(120ms)且相位错开——
+     *   adv 占 [0,4ms)、scan 占 [10,40ms),构造性零碰撞,占空比无损。
+     *   同设备内相位归我们管,不需要概率避碰;互质/抖动留给管不着相位的
+     *   对端(advDelay 随机抖动即为此)。 */
+    ll_sched_init();
+    uint64_t t0 = time_now_us();
+#if defined(DUO_COLLIDE_DEMO)
+    int slot_adv  = ll_sched_add(1, t0 + 1000u, 4000u, 60000u);
+    int slot_scan = ll_sched_add(2, t0 + 5000u, 30000u, 100000u);
+#else
+    int slot_adv  = ll_sched_add(1, t0 + 1000u, 4000u, 60000u);
+    int slot_scan = ll_sched_add(2, t0 + 11000u, 30000u, 120000u);
+#endif
+
+    uint32_t scan_ch = 0;
+    uint32_t last_ndev = 0;
+    uint64_t next_report = time_now_us() + 2000000u;
 
     for (;;) {
-        /* ---- 广播（同步路径，主循环节奏） ---- */
-        uint64_t t_ci_end = 0;
-        if (ll_adv_sweep(&OPS, &conn, &t_ci_end, &ast)) {
-            g_connected = 1;
-            ll_async_start(&OPS, &conn, t_ci_end, &st, on_disconnect_cb);
-            log_puts("[conn] async engine started\n");
-
-            /* ---- 主循环解放的证据：连接全程心跳照走 ---- */
-            uint32_t spins = 0;
-            uint64_t next_beat = time_now_us() + 1000000u;
-            uint32_t beat = 0;
-            while (g_connected) {
-                spins++;
-                if (time_now_us() >= next_beat) {
-                    next_beat += 1000000u;
-                    beat++;
-                    log_printf("[main] heartbeat %u: spins=%uk evt=%u hit=%u\n",
-                               beat, spins / 1000u, st.events, st.hits);
-                    spins = 0;
-                }
+        /* ---- 连接期：调度暂停，主循环只打心跳（引擎全在 IRQ） ---- */
+        if (g_connected) {
+            static uint64_t next_beat;
+            uint64_t now = time_now_us();
+            if (next_beat == 0) next_beat = now + 1000000u;
+            if (now >= next_beat) {
+                next_beat += 1000000u;
+                log_printf("[main] connected: evt=%u hit=%u\n", st.events, st.hits);
             }
-
-            log_printf("\n[conn] AA=0x%08x int=%uus hop=%u -> events=%u hits=%u tx=%u\n",
-                       conn.aa, conn.interval_us, conn.hop,
-                       st.events, st.hits, st.tx_done);
-            log_printf("[conn] mtu=%u txoct=%u maxrsp=%u tx_timeouts=%u\n",
-                       st.mtu, st.tx_octets, st.maxrsp, st.tx_timeouts);
-            {
-                uint32_t lmin, lmax, rmin, rmax;
-                radio_dbg_tifs(&lmin, &lmax, &rmin, &rmax);
-                log_printf("[conn] tifs_late=%u..%u ramp=%u..%u us\n",
-                           lmin, lmax, rmin, rmax);
-            }
-            {
-                uint32_t cnt = st.rxpdu_n < 6u ? st.rxpdu_n : 6u;
-                uint32_t base = st.rxpdu_n - cnt;
-                for (uint32_t j = 0; j < cnt; j++) {
-                    uint32_t slot = (base + j) % 6u;
-                    uint32_t llid = st.rxpdu[slot][0] & 0x3u;
-                    uint32_t len = st.rxpdu[slot][1];
-                    log_printf("  rx[-%u] evt=%u LLID=%u len=%u:", cnt - j,
-                               st.rxevt[slot], llid, len);
-                    for (uint32_t k = 0; k < len + 2u && k < 32u; k++)
-                        log_printf(" %02x", st.rxpdu[slot][k]);
-                    log_printf(" | tx=%02x\n", st.txhdr[slot]);
-                }
-            }
+            if (!g_connected) next_beat = 0;
             continue;
         }
 
-        if ((++adv_events & 127u) == 0) {
-            uint32_t lmin, lmax, rmin, rmax;
-            radio_dbg_tifs(&lmin, &lmax, &rmin, &rmax);
-            log_printf("[adv] events=%u rx_ok=%u rx_err=%u sreq=%u srsp=%u"
-                       " late=%u..%u ramp=%u..%u scanner=%02x%02x%02x%02x%02x%02x\n",
-                       adv_events, ast.rx_ok, ast.rx_err, ast.scan_req, ast.scan_rsp,
-                       lmin, lmax, rmin, rmax,
-                       ast.scan_addr[5], ast.scan_addr[4], ast.scan_addr[3],
-                       ast.scan_addr[2], ast.scan_addr[1], ast.scan_addr[0]);
+        int s = ll_sched_pick(time_now_us());
+        if (s < 0) {
+            continue;
+        }
+        const ll_sched_slot_t *sl = ll_sched_slot(s);
+        while (time_now_us() < sl->t_start) {
         }
 
-        time_delay_us(20000u + (rng_next() % 10000u));
+        if (s == slot_adv) {
+            uint64_t t_ci_end = 0;
+            if (ll_adv_sweep(&OPS, &conn, &t_ci_end, &ast)) {
+                g_connected = 1;
+                ll_async_start(&OPS, &conn, t_ci_end, &st, on_disconnect_cb);
+                log_puts("[conn] async engine started (dual-role paused)\n");
+                ll_sched_done(s, time_now_us());
+                continue;
+            }
+        } else if (s == slot_scan) {
+            ll_scan_window(&OPS, scan_ch, 30000u, &sst);
+            scan_ch = (scan_ch + 1u) % 3u;
+        }
+        ll_sched_done(s, time_now_us());
+
+        /* ---- ~2s 统计报告 + 新设备增量 ---- */
+        uint64_t now = time_now_us();
+        if (now >= next_report) {
+            next_report = now + 2000000u;
+            const ll_sched_slot_t *a = ll_sched_slot(slot_adv);
+            const ll_sched_slot_t *c = ll_sched_slot(slot_scan);
+            log_printf("[duo] adv %u/%uy sreq=%u | scan %u/%uy win=%u ok=%u err=%u devs=%u\n",
+                       a->runs, a->yields, ast.scan_req,
+                       c->runs, c->yields, sst.windows, sst.rx_ok, sst.rx_err,
+                       sst.n_dev);
+            for (uint32_t i = last_ndev; i < sst.n_dev; i++) {
+                ll_scan_dev_t *d = &sst.dev[i];
+                log_printf("  dev %02x:%02x:%02x:%02x:%02x:%02x %c t%u n=%u '%s'\n",
+                           d->addr[5], d->addr[4], d->addr[3],
+                           d->addr[2], d->addr[1], d->addr[0],
+                           d->txadd ? 'R' : 'P', d->type, d->count,
+                           d->name_len ? d->name : "");
+            }
+            last_ndev = sst.n_dev;
+
+            /* HFXO 周期重调谐（温漂对抗,见 README RF 三大必修课） */
+            if (clock_hfxo_retune() != 0) {
+                log_puts("[hfxo] retune failed\n");
+            }
+        }
+
+        time_delay_us(200u + (rng_next() % 800u));   /* 广播相位抖动 */
     }
 }

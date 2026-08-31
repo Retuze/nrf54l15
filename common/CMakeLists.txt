@@ -7,8 +7,11 @@ add_library(gatt STATIC
 target_include_directories(gatt PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/bluetooth/gatt)
 
 # LL 链路层：纯协议 + ll_ops 注入（无寄存器访问），host 可单测（tests/ll_test.c）
+# sched = 单 radio 时间片调度器雏形、scan = 被动扫描 SM（tests/sched_test.c）
 add_library(ll STATIC
-  bluetooth/ll/ll.c)
+  bluetooth/ll/ll.c
+  bluetooth/ll/sched.c
+  bluetooth/ll/scan.c)
 target_include_directories(ll PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/bluetooth/ll)
 
 # SPSC 字节环形缓冲（平台无关，ISR 生产/主循环消费），host 可单测

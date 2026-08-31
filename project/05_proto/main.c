@@ -98,7 +98,11 @@ static void proto_send_cb(const uint8_t *frag, uint32_t len, void *arg)
     (void)arg;
     nq_push(frag, len);
 }
-static uint32_t proto_mtu_cb(void) { return 244u; }
+/* proto 传输帧上限 = 实时 ATT MTU − 3（HVN 头占 3）。曾写死 244：
+ * 手机不请求 MTU（默认 23）时组出的大帧超 MTU,通知被对端栈静默丢弃
+ * ——server 无法主动发起 MTU 交换（规范限 client）,正解是任何 MTU 下
+ * 自动分片（proto 的 SEQ/MORE）。 */
+static uint32_t proto_mtu_cb(void) { return gatt_dbg_mtu() - 3u; }
 
 /* REPORT 字段静态存储（重发需要稳定引用） */
 static uint8_t  bat_val[4];                 /* level, voltage_mv u16, flags */
