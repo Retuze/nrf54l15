@@ -67,23 +67,27 @@ static void nq_push(const uint8_t *frag, uint32_t len)
     nq_count++;
 }
 
-/* ll 的 att_notify_pull：每个连接事件取一条（ATT 载荷即 proto 传输帧）。
+/* ll 的 att_notify_pull：每个连接事件取一条，包装成 ATT Handle Value
+ * Notification（0x1B + 柄 LE + proto 传输帧）。订阅（CCCD）之前不发。
  * 放不下时不截断（截断的帧是坏帧）：留队等下一个事件。 */
 static uint32_t att_notify_pull(uint8_t *out, uint32_t max)
 {
-    if (nq_count == 0u) {
+    if (nq_count == 0u || !gatt_notify_enabled()) {
         return 0;
     }
     uint32_t n = nq_len[nq_head];
-    if (n > max) {
+    if (3u + n > max) {
         return 0;
     }
+    out[0] = 0x1Bu;                                  /* HANDLE_VALUE_NTF */
+    out[1] = (uint8_t)GATT_FFF1_VAL_HANDLE;
+    out[2] = (uint8_t)(GATT_FFF1_VAL_HANDLE >> 8);
     for (uint32_t i = 0; i < n; i++) {
-        out[i] = nq_buf[nq_head][i];
+        out[3u + i] = nq_buf[nq_head][i];
     }
     nq_head = (uint8_t)((nq_head + 1u) % NOTIFY_SLOTS);
     nq_count--;
-    return n;
+    return 3u + n;
 }
 
 /* ------------------------------------------------ proto 装配 -- */
@@ -203,7 +207,7 @@ static uint32_t att_write_cb(uint16_t handle, const uint8_t *val, uint32_t len,
                              void *arg)
 {
     (void)arg;
-    if (handle == 0xFFF1u) {
+    if (handle == GATT_FFF1_VAL_HANDLE) {
         proto_feed(val, len);
     }
     return 0;

@@ -90,9 +90,9 @@ static void test_read_by_group(void)
     const uint8_t want2[] = { 0x11, 6, 0x08, 0x00, 0x0A, 0x00, 0x0F, 0x18 };
     expect(want2, 8, gatt_handle_att(req2, 7, rsp));
 
-    /* s=11 → custom service：end group = 13 */
+    /* s=11 → custom service：end group = 14（0xFFF1 值后带 CCCD） */
     const uint8_t req3[] = { 0x10, 0x0B, 0x00, 0xFF, 0xFF, 0x00, 0x28 };
-    const uint8_t want3[] = { 0x11, 6, 0x0B, 0x00, 0x0D, 0x00, 0xF0, 0xFF };
+    const uint8_t want3[] = { 0x11, 6, 0x0B, 0x00, 0x0E, 0x00, 0xF0, 0xFF };
     expect(want3, 8, gatt_handle_att(req3, 7, rsp));
 }
 
@@ -103,9 +103,42 @@ static void test_find_info(void)
     const uint8_t want[] = { 0x05, 0x01, 0x03, 0x00, 0x00, 0x2A };
     expect(want, 6, gatt_handle_att(req, 5, rsp));
 
-    const uint8_t req_none[] = { 0x04, 0x0E, 0x00, 0x0F, 0x00 };
-    const uint8_t want_err[] = { 0x01, 0x04, 0x0E, 0x00, 0x0A };
+    /* 0x000E = 0xFFF1 的 CCCD（notify 订阅开关） */
+    const uint8_t req_cccd[] = { 0x04, 0x0E, 0x00, 0x0F, 0x00 };
+    const uint8_t want_cccd[] = { 0x05, 0x01, 0x0E, 0x00, 0x02, 0x29 };
+    expect(want_cccd, 6, gatt_handle_att(req_cccd, 5, rsp));
+
+    const uint8_t req_none[] = { 0x04, 0x0F, 0x00, 0x0F, 0x00 };
+    const uint8_t want_err[] = { 0x01, 0x04, 0x0F, 0x00, 0x0A };
     expect(want_err, 5, gatt_handle_att(req_none, 5, rsp));
+}
+
+/* --------------------------------------------------- CCCD ---- */
+static void test_cccd_subscribe(void)
+{
+    gatt_on_connect();
+    CHECK_EQ(gatt_notify_enabled(), 0u);
+
+    /* WRITE_REQ CCCD = 0x0001 → WRITE_RSP，订阅生效 */
+    const uint8_t req_on[] = { 0x12, 0x0E, 0x00, 0x01, 0x00 };
+    const uint8_t want_rsp[] = { 0x13 };
+    expect(want_rsp, 1, gatt_handle_att(req_on, 5, rsp));
+    CHECK_EQ(gatt_notify_enabled(), 1u);
+
+    /* 读回 CCCD 值 */
+    const uint8_t req_rd[] = { 0x0A, 0x0E, 0x00 };
+    const uint8_t want_rd[] = { 0x0B, 0x01, 0x00 };
+    expect(want_rd, 3, gatt_handle_att(req_rd, 3, rsp));
+
+    /* WRITE_CMD CCCD = 0x0000 → 无响应，订阅关闭 */
+    const uint8_t req_off[] = { 0x52, 0x0E, 0x00, 0x00, 0x00 };
+    CHECK_EQ(gatt_handle_att(req_off, 5, rsp), 0u);
+    CHECK_EQ(gatt_notify_enabled(), 0u);
+
+    /* 断链复位后保持关闭 */
+    gatt_handle_att(req_on, 5, rsp);
+    gatt_on_connect();
+    CHECK_EQ(gatt_notify_enabled(), 0u);
 }
 
 /* --------------------------------------- READ / READ_BLOB ---- */
@@ -253,6 +286,7 @@ int main(void)
     test_read_by_type();
     test_read_by_group();
     test_find_info();
+    test_cccd_subscribe();
     test_read_chunking();
     test_read_blob();
     test_write();

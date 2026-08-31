@@ -42,10 +42,20 @@ void gatt_set_write_cb(gatt_write_cb_t cb, void *arg)
     s_write_arg = arg;
 }
 
+/* 0xFFF1 的 CCCD 值（bit0 = notify）。无绑定存储：每次连接复位。 */
+static uint8_t v_cccd[2];
+
+uint32_t gatt_notify_enabled(void)
+{
+    return (uint32_t)(v_cccd[0] & 0x01u);
+}
+
 void gatt_on_connect(void)
 {
     g_mtu = 23u;
     g_tx_octets = 27u;
+    v_cccd[0] = 0u;
+    v_cccd[1] = 0u;
 }
 
 void gatt_set_tx_octets(uint32_t octets)
@@ -102,7 +112,9 @@ static const attr_t db[] = {
     { 0x000B, 0x2800, v_cust_svc,  sizeof(v_cust_svc)  },
     { 0x000C, 0x2803, v_big_decl,  sizeof(v_big_decl)  },
     { 0x000D, 0xFFF1, v_big,       sizeof(v_big)       },
+    { 0x000E, 0x2902, v_cccd,      sizeof(v_cccd)      },
 };
+#define CCCD_HANDLE 0x000Eu
 #define NDB (sizeof(db) / sizeof(db[0]))
 
 static uint16_t u16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
@@ -220,6 +232,11 @@ uint32_t gatt_handle_att(const uint8_t *req, uint32_t len, uint8_t *o)
     case OP_WRITE_CMD:
         /* Write Without Response：应用协议的上行通道（proto 帧）。
          * 无 ATT 响应——协议层用自己的 ACK（MSG_ID 幂等重发兜底）。 */
+        if (len >= 3 && u16(req + 1) == CCCD_HANDLE) {
+            if (len >= 4) v_cccd[0] = req[3];
+            if (len >= 5) v_cccd[1] = req[4];
+            return 0;
+        }
         if (s_write_cb && len >= 3) {
             s_write_cb(u16(req + 1), req + 3, len - 3u, s_write_arg);
         }
@@ -229,6 +246,12 @@ uint32_t gatt_handle_att(const uint8_t *req, uint32_t len, uint8_t *o)
         /* Write With Response：同一写回调（调试工具默认走这条），
          * 额外回一条空 ATT 响应。无回调时维持 E_WRITE_NOT_PERM。 */
         uint16_t h = (len >= 3) ? u16(req + 1) : 0;
+        if (h == CCCD_HANDLE && len >= 3) {
+            if (len >= 4) v_cccd[0] = req[3];
+            if (len >= 5) v_cccd[1] = req[4];
+            o[0] = 0x13u;                /* WRITE_RSP */
+            return 1;
+        }
         if (s_write_cb && len >= 3) {
             s_write_cb(h, req + 3, len - 3u, s_write_arg);
             o[0] = 0x13u;                /* WRITE_RSP（无附加字段） */

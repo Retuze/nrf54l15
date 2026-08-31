@@ -150,32 +150,47 @@ static uint32_t dle_effective(uint32_t max_rx_octets, uint32_t max_rx_time)
     return (max_rx_octets < by_time) ? max_rx_octets : by_time;
 }
 
-/*
- * Build our reply, updating SN/NESN from the received header. If the peer sent
- * an LL control PDU (LLID=3), answer it in this same T_IFS turnaround so the
- * central completes its setup procedures instead of terminating on timeout.
- */
-static void conn_reply(const ll_ops_t *ops, ll_stats_t *st, int crc_ok)
-{
-    uint8_t rx_hdr = rx_buf[0];
-    if (crc_ok) {
-        uint8_t sn_r  = (rx_hdr >> 3) & 1u;
-        uint8_t nesn_r= (rx_hdr >> 2) & 1u;
-        if (sn_r == conn_nesn)  conn_nesn ^= 1u;   /* got new data -> ack it   */
-        if (nesn_r != conn_sn)  conn_sn   ^= 1u;   /* peer acked us -> advance  */
-    }
+/* 待发响应队列：新数据到达时可能正处于“上一条数据 PDU 未确认”的窗口，
+ * 响应先入队、等确认后发。ATT 同时只有一个未决请求 + LL 控制过程偶发
+ * 并行，2 槽即覆盖；满时丢弃在正常流量下不可达。 */
+#define PEND_SLOTS 2u
+static uint8_t pend_llid_q[PEND_SLOTS];
+static uint8_t pend_body_q[PEND_SLOTS][256];
+static uint8_t pend_blen_q[PEND_SLOTS];
+static uint8_t pend_head, pend_count;
+static uint8_t tx_unacked;          /* 上一条非空数据 PDU 尚未被对端确认 */
 
-    uint8_t llid = 0x01u;   /* default: empty data PDU */
+static void pend_push(uint8_t llid, const uint8_t *b, uint32_t blen)
+{
+    if (pend_count == PEND_SLOTS) {
+        return;
+    }
+    uint8_t slot = (uint8_t)((pend_head + pend_count) % PEND_SLOTS);
+    pend_llid_q[slot] = llid;
+    pend_blen_q[slot] = (uint8_t)blen;
+    for (uint32_t i = 0; i < blen; i++) pend_body_q[slot][i] = b[i];
+    pend_count++;
+}
+
+/*
+ * Process one NEW data PDU (only called when its SN matched conn_nesn --
+ * a retransmitted PDU is acknowledged by the header bits but must not be
+ * re-processed, or a lost reply would re-execute ATT writes / LL procedures).
+ * Responses go through the pend queue; the TX side drains it once our
+ * previous data PDU is acknowledged.
+ */
+static void conn_process_rx(const ll_ops_t *ops)
+{
+    uint8_t llid = 0x03u;           /* ctrl 分支的响应 LLID；ATT 分支改成 2 */
     static uint8_t body[256];
-    static uint8_t att[250];        /* ATT 载荷暂存（响应/通知共用） */
+    static uint8_t att[250];        /* ATT 载荷暂存 */
     uint32_t blen = 0;
-    uint8_t rxllid = rx_hdr & 3u;
+    uint8_t rxllid = rx_buf[0] & 3u;
     uint8_t rxlen  = rx_buf[1];
 
-    if (crc_ok && rxllid == 3u && rxlen >= 1u) {
+    if (rxllid == 3u && rxlen >= 1u) {
         /* --- LL control PDU --- */
         uint8_t op = rx_buf[2];
-        llid = 0x03u;
         /* 各控制 PDU 的最小长度（opcode 1 字节 + 参数字节）：短 PDU 若直接
          * 按字段读会拿到上次残留的脏数据，一律回 UNKNOWN_RSP。
          * 用 goto 跳出 case（do-while 的 break 只跳宏体，会继续执行 case）。 */
@@ -215,8 +230,7 @@ static void conn_reply(const ll_ops_t *ops, ll_stats_t *st, int crc_ok)
             /* Reply to our own LL_LENGTH_REQ: adopt the negotiated size. */
             if (ops->on_dle) ops->on_dle(dle_effective(rd16(&rx_buf[3]), rd16(&rx_buf[5])));
             g_dle_state = 2;
-            llid = 0x01u;                    /* just ack */
-            break;
+            break;                           /* 无响应载荷，只确认 */
         }
         case LL_CONNECTION_UPDATE_IND:
             CTRL_NEED(12u);
@@ -227,20 +241,17 @@ static void conn_reply(const ll_ops_t *ops, ll_stats_t *st, int crc_ok)
             g_upd_timeout_us   = rd16(&rx_buf[10]) * 10000u;
             g_upd_instant      = (uint16_t)rd16(&rx_buf[12]);
             g_upd_pending      = 1;
-            llid = 0x01u;                    /* IND: just ack, no response */
-            break;
+            break;                           /* IND：只确认，无响应 */
         case LL_CHANNEL_MAP_IND:
             CTRL_NEED(8u);
             /* ChM(5) Instant(2) */
             for (int i = 0; i < 5; i++) g_chm_new[i] = rx_buf[3 + i];
             g_chm_instant = (uint16_t)rd16(&rx_buf[8]);
             g_chm_pending = 1;
-            llid = 0x01u;
             break;
         case LL_TERMINATE_IND:
             CTRL_NEED(2u);
             g_terminate = 1;
-            llid = 0x01u;
             break;
         default:
             CTRL_NEED(2u);
@@ -251,7 +262,7 @@ static void conn_reply(const ll_ops_t *ops, ll_stats_t *st, int crc_ok)
         }
 #undef CTRL_NEED
         ctrl_done: ;
-    } else if (crc_ok && (rxllid == 2u || rxllid == 1u) && rxlen >= 4u) {
+    } else if ((rxllid == 2u || rxllid == 1u) && rxlen >= 4u) {
         /* --- L2CAP frame: header = length(2) + CID(2) --- */
         uint16_t cid = (uint16_t)(rx_buf[4] | (rx_buf[5] << 8));
         if (cid == 0x0004u && ops->att_handle) {    /* ATT channel */
@@ -262,43 +273,82 @@ static void conn_reply(const ll_ops_t *ops, ll_stats_t *st, int crc_ok)
                 body[2] = 0x04u;         body[3] = 0x00u;   /* CID = ATT */
                 for (uint32_t k = 0; k < alen; k++) body[4 + k] = att[k];
                 blen = 4u + alen;
-                if (blen > st->maxrsp) st->maxrsp = blen;
             }
         }
     }
 
-    /* If we'd otherwise send an empty PDU and DLE hasn't happened, start it
-     * ourselves (retransmitting every 8 events until the peer answers). */
-    if (llid == 0x01u && blen == 0u && g_dle_state == 0 &&
-        g_conn_evt > 8u && (g_conn_evt - g_dle_sent_evt) > 8u) {
-        llid = 0x03u;
-        body[0] = LL_LENGTH_REQ;
-        body[1] = 251u;  body[2] = 0u;
-        body[3] = 0x48u; body[4] = 0x08u;
-        body[5] = 251u;  body[6] = 0u;
-        body[7] = 0x48u; body[8] = 0x08u;
-        blen = 9;
-        g_dle_sent_evt = g_conn_evt;
+    if (blen > 0u) {
+        pend_push(llid, body, blen);
+    }
+}
+
+/*
+ * Build our reply, updating SN/NESN from the received header. New data is
+ * processed exactly once (SN gate); our own data PDUs are retransmitted
+ * unchanged until the peer's NESN acknowledges them.
+ */
+static void conn_reply(const ll_ops_t *ops, ll_stats_t *st, int crc_ok)
+{
+    uint8_t rx_hdr = rx_buf[0];
+    int newdat = 0;
+    if (crc_ok) {
+        uint8_t sn_r  = (rx_hdr >> 3) & 1u;
+        uint8_t nesn_r= (rx_hdr >> 2) & 1u;
+        if (sn_r == conn_nesn) { conn_nesn ^= 1u; newdat = 1; } /* new data -> ack */
+        if (nesn_r != conn_sn) { conn_sn ^= 1u; tx_unacked = 0; } /* acked -> advance */
     }
 
-    /* 下行通知：reply 仍为空且 DLE 已完成（大 ATT 载荷才放得下；未完成时
-     * 通知留队，由 DLE 自发起优先处理），拉取应用待发通知顶替空包。
-     * ATT 响应优先（上面的响应分支已先占 llid=2）；纯空 ack 被顶替是合法的
-     * ——SN/NESN 语义由通知承载，central 接受任何 LLID。每事件一条。 */
-    if (llid == 0x01u && blen == 0u && g_dle_state == 2u && ops->att_notify_pull) {
+    if (newdat) {
+        conn_process_rx(ops);
+    }
+
+    if (tx_unacked) {
+        /* 上一条数据 PDU 未被确认：载荷原样重发。SN 未推进（仍等于
+         * conn_sn），只需按当前状态刷新头字节的 NESN 位。 */
+        tx_buf[0] = (uint8_t)((tx_buf[0] & 0x03u) | (conn_nesn << 2) | (conn_sn << 3));
+        return;
+    }
+
+    /* 组新 PDU：待发响应 > DLE 自发起 > 应用通知 > 空 PDU。
+     * 通知顶替空包是合法的——SN/NESN 语义由通知承载。每事件一条。 */
+    uint8_t llid = 0x01u;
+    uint32_t blen = 0;
+
+    if (pend_count > 0u) {
+        llid = pend_llid_q[pend_head];
+        blen = pend_blen_q[pend_head];
+        for (uint32_t i = 0; i < blen; i++) tx_buf[2 + i] = pend_body_q[pend_head][i];
+        pend_head = (uint8_t)((pend_head + 1u) % PEND_SLOTS);
+        pend_count--;
+        if (blen > st->maxrsp) st->maxrsp = blen;
+    } else if (g_dle_state == 0 && g_conn_evt > 8u &&
+               (g_conn_evt - g_dle_sent_evt) > 8u) {
+        /* If we'd otherwise send an empty PDU and DLE hasn't happened, start
+         * it ourselves (retrying every 8 events until the peer answers). */
+        llid = 0x03u;
+        tx_buf[2] = LL_LENGTH_REQ;
+        tx_buf[3] = 251u;   tx_buf[4] = 0u;    /* MaxRxOctets = 251 */
+        tx_buf[5] = 0x48u;  tx_buf[6] = 0x08u; /* MaxRxTime = 2120 us */
+        tx_buf[7] = 251u;   tx_buf[8] = 0u;    /* MaxTxOctets = 251 */
+        tx_buf[9] = 0x48u;  tx_buf[10] = 0x08u;/* MaxTxTime = 2120 us */
+        blen = 9;
+        g_dle_sent_evt = g_conn_evt;
+    } else if (g_dle_state == 2u && ops->att_notify_pull) {
+        /* 下行通知：DLE 完成后才发大帧（未完成时通知留队）。 */
+        static uint8_t att[250];
         uint32_t alen = ops->att_notify_pull(att, sizeof(att));
         if (alen > 0u) {
             llid = 0x02u;
-            body[0] = (uint8_t)alen; body[1] = (uint8_t)(alen >> 8);
-            body[2] = 0x04u;         body[3] = 0x00u;   /* CID = ATT */
-            for (uint32_t k = 0; k < alen; k++) body[4 + k] = att[k];
+            tx_buf[2] = (uint8_t)alen; tx_buf[3] = (uint8_t)(alen >> 8);
+            tx_buf[4] = 0x04u;         tx_buf[5] = 0x00u;   /* CID = ATT */
+            for (uint32_t k = 0; k < alen; k++) tx_buf[6 + k] = att[k];
             blen = 4u + alen;
         }
     }
 
-    tx_buf[0] = llid | (conn_nesn << 2) | (conn_sn << 3);
+    tx_buf[0] = (uint8_t)(llid | (conn_nesn << 2) | (conn_sn << 3));
     tx_buf[1] = (uint8_t)blen;
-    for (uint32_t i = 0; i < blen; i++) tx_buf[2 + i] = body[i];
+    tx_unacked = (blen > 0u);
 }
 
 /*
@@ -415,6 +465,7 @@ void ll_conn_run(const ll_ops_t *ops, ll_conn_t *conn,
 {
     ops->radio_set_aa(conn->aa, conn->crcinit);
     conn_sn = 0; conn_nesn = 0;
+    tx_unacked = 0; pend_head = 0; pend_count = 0;
     csa1_last = 0;
     g_terminate = 0;
     g_upd_pending = 0; g_chm_pending = 0;

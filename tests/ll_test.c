@@ -215,14 +215,16 @@ static ll_conn_t mk_conn(void)
     return c;
 }
 
-/* 空数据事件若干 + TERMINATE 收尾（SN/NESN 全程 0，LL 首事件会翻转 NESN） */
+/* 空数据事件若干 + TERMINATE 收尾。规范正确的主端序列：全命中剧本下第 i
+ * 包 sn=i%2、nesn=i%2（新数据 SN 逐包翻转，NESN 逐包确认我们的回复）。 */
 static void script_tail(int base_slot, uint32_t n_empty)
 {
     for (uint32_t i = 0; i < n_empty; i++) {
-        ev_pkt(100, mk_empty(base_slot + (int)i, 0, 0), 2, 1);
+        ev_pkt(100, mk_empty(base_slot + (int)i, (int)(i & 1u), (int)(i & 1u)), 2, 1);
     }
     static const uint8_t term_pl[] = { 0x00 };
-    ev_pkt(100, mk_ctrl(base_slot + (int)n_empty, 0, 0, 0x02u, term_pl, 1), 3, 1);
+    ev_pkt(100, mk_ctrl(base_slot + (int)n_empty, (int)(n_empty & 1u),
+                        (int)(n_empty & 1u), 0x02u, term_pl, 1), 3, 1);
 }
 
 /* ------------------------------------------------ 用例 -- */
@@ -290,14 +292,14 @@ static void test_sn_nesn(void)
     ev_pkt(100, mk_empty(1, 0, 0), 2, 1);    /* e1：重传（SN 未变）→ 不动 */
     ev_pkt(100, mk_empty(2, 1, 1), 2, 1);    /* e2：ack 我们 + 新数据 → SN/NESN 都翻转 */
     static const uint8_t term_pl[] = { 0x00 };
-    ev_pkt(100, mk_ctrl(3, 1, 1, 0x02u, term_pl, 1), 3, 1);
+    ev_pkt(100, mk_ctrl(3, 0, 0, 0x02u, term_pl, 1), 3, 1);  /* e3：新数据 + ack sn1 */
 
     ll_conn_run(&ops, &conn, 3000, &st);
 
     CHECK_EQ(tx_log[0][0], 0x05u);           /* LLID1 | NESN1<<2 | SN0<<3 */
     CHECK_EQ(tx_log[1][0], 0x05u);           /* 重传：NESN 不再翻 */
     CHECK_EQ(tx_log[2][0], 0x09u);           /* LLID1 | NESN0 | SN1 */
-    CHECK_EQ(tx_log[3][0], 0x09u);           /* terminate ack */
+    CHECK_EQ(tx_log[3][0], 0x05u);           /* terminate ack（SN 回 0） */
     CHECK_EQ(st.events, 4u);
     CHECK_EQ(st.hits, 4u);
     CHECK_EQ(st.tx_done, 4u);
@@ -315,12 +317,12 @@ static void test_ll_ctrl(void)
     static const uint8_t len_pl[8] = { 251, 0, 0x48, 0x08, 251, 0, 0x48, 0x08 };
     static const uint8_t unk_pl[1] = { 0 };
     ev_pkt(100, mk_ctrl(0, 0, 0, 0x08u, feat_pl, 8), 11, 1);   /* FEATURE_REQ */
-    ev_pkt(100, mk_ctrl(1, 0, 0, 0x0Cu, feat_pl, 4), 7, 1);    /* VERSION_IND */
+    ev_pkt(100, mk_ctrl(1, 1, 1, 0x0Cu, feat_pl, 4), 7, 1);    /* VERSION_IND */
     ev_pkt(100, mk_ctrl(2, 0, 0, 0x40u, unk_pl, 1), 4, 1);     /* unknown */
-    ev_pkt(100, mk_ctrl(3, 0, 0, 0x14u, len_pl, 8), 11, 1);    /* LENGTH_REQ */
+    ev_pkt(100, mk_ctrl(3, 1, 1, 0x14u, len_pl, 8), 11, 1);    /* LENGTH_REQ */
     ev_pkt(100, mk_ctrl(4, 0, 0, 0x15u, len_pl, 8), 11, 1);    /* LENGTH_RSP */
     static const uint8_t term_pl[] = { 0x00 };
-    ev_pkt(100, mk_ctrl(5, 0, 0, 0x02u, term_pl, 1), 3, 1);    /* TERMINATE */
+    ev_pkt(100, mk_ctrl(5, 1, 1, 0x02u, term_pl, 1), 3, 1);    /* TERMINATE */
 
     ll_conn_run(&ops, &conn, 3000, &st);
 
@@ -365,11 +367,11 @@ static void test_chm_instant(void)
     static const uint8_t new_chm[5] = { 0x01, 0, 0, 0, 0 };    /* 只剩信道 0 */
     static const uint8_t chm_pl[7] = { 1, 0, 0, 0, 0, 3, 0 };  /* ChM(5) Instant=3 */
     ev_pkt(100, mk_empty(0, 0, 0), 2, 1);
-    ev_pkt(100, mk_ctrl(1, 0, 0, 0x01u, chm_pl, 7), 10, 1);    /* CHANNEL_MAP_IND */
+    ev_pkt(100, mk_ctrl(1, 1, 1, 0x01u, chm_pl, 7), 10, 1);    /* CHANNEL_MAP_IND */
     ev_pkt(100, mk_empty(2, 0, 0), 2, 1);
-    ev_pkt(100, mk_empty(3, 0, 0), 2, 1);
+    ev_pkt(100, mk_empty(3, 1, 1), 2, 1);
     ev_pkt(100, mk_empty(4, 0, 0), 2, 1);
-    ev_pkt(100, mk_empty(5, 0, 0), 2, 1);
+    ev_pkt(100, mk_empty(5, 1, 1), 2, 1);
     static const uint8_t term_pl[] = { 0x00 };
     ev_pkt(100, mk_ctrl(6, 0, 0, 0x02u, term_pl, 1), 3, 1);
 
@@ -398,12 +400,12 @@ static void test_conn_update(void)
     /* WinSize=8 WinOffset=0 Interval=40 Timeout=200 Instant=2 */
     static const uint8_t upd_pl[11] = { 8, 0, 0, 40, 0, 0, 0, 200, 0, 2, 0 };
     ev_pkt(100, mk_empty(0, 0, 0), 2, 1);
-    ev_pkt(100, mk_ctrl(1, 0, 0, 0x00u, upd_pl, 11), 14, 1);   /* CONNECTION_UPDATE_IND */
+    ev_pkt(100, mk_ctrl(1, 1, 1, 0x00u, upd_pl, 11), 14, 1);   /* CONNECTION_UPDATE_IND */
     ev_pkt(100, mk_empty(2, 0, 0), 2, 1);
-    ev_pkt(100, mk_empty(3, 0, 0), 2, 1);
+    ev_pkt(100, mk_empty(3, 1, 1), 2, 1);
     ev_pkt(100, mk_empty(4, 0, 0), 2, 1);
     static const uint8_t term_pl[] = { 0x00 };
-    ev_pkt(100, mk_ctrl(5, 0, 0, 0x02u, term_pl, 1), 3, 1);
+    ev_pkt(100, mk_ctrl(5, 1, 1, 0x02u, term_pl, 1), 3, 1);
 
     ll_conn_run(&ops, &conn, 3000, &st);
 
@@ -444,7 +446,7 @@ static void test_att_passthrough(void)
     static const uint8_t att_req[] = { 0x0A, 0x03, 0x00 };     /* READ name handle */
     ev_pkt(100, mk_att(0, 0, 0, att_req, 3), 9, 1);
     static const uint8_t term_pl[] = { 0x00 };
-    ev_pkt(100, mk_ctrl(1, 0, 0, 0x02u, term_pl, 1), 3, 1);
+    ev_pkt(100, mk_ctrl(1, 1, 1, 0x02u, term_pl, 1), 3, 1);
 
     ll_conn_run(&ops, &conn, 3000, &st);
 
@@ -500,10 +502,10 @@ static void test_notify_pull(void)
     fake_reset();
     static const uint8_t len_pl[8] = { 251, 0, 0x48, 0x08, 251, 0, 0x48, 0x08 };
     ev_pkt(100, mk_ctrl(0, 0, 0, 0x15u, len_pl, 8), 11, 1);   /* LENGTH_RSP → dle 完成 */
-    ev_pkt(100, mk_empty(1, 0, 0), 2, 1);                     /* 空 → 发通知 */
+    ev_pkt(100, mk_empty(1, 1, 1), 2, 1);                     /* 空 → 发通知 */
     ev_pkt(100, mk_empty(2, 0, 0), 2, 1);                     /* 空 → 队列空，回空包 */
     static const uint8_t term_pl[] = { 0x00 };
-    ev_pkt(100, mk_ctrl(3, 0, 0, 0x02u, term_pl, 1), 3, 1);
+    ev_pkt(100, mk_ctrl(3, 1, 1, 0x02u, term_pl, 1), 3, 1);
 
     notif[0] = 0x42; notif[1] = 0x43; notif[2] = 0x44;
     notif_len = 3;
@@ -535,7 +537,7 @@ static void test_notify_gated_pre_dle(void)
     ll_stats_t st;
     fake_reset();
     ev_pkt(100, mk_empty(0, 0, 0), 2, 1);
-    ev_pkt(100, mk_empty(1, 0, 0), 2, 1);
+    ev_pkt(100, mk_empty(1, 1, 1), 2, 1);
     static const uint8_t term_pl[] = { 0x00 };
     ev_pkt(100, mk_ctrl(2, 0, 0, 0x02u, term_pl, 1), 3, 1);
 
@@ -571,9 +573,9 @@ static void test_on_conn_event_hook(void)
     hook_n = 0;
     static const uint8_t term_pl[] = { 0x00 };
     ev_pkt(100, mk_empty(0, 0, 0), 2, 1);
-    ev_pkt(100, mk_empty(1, 0, 0), 2, 1);
+    ev_pkt(100, mk_empty(1, 1, 1), 2, 1);
     ev_pkt(100, mk_empty(2, 0, 0), 2, 1);
-    ev_pkt(100, mk_ctrl(3, 0, 0, 0x02u, term_pl, 1), 3, 1);
+    ev_pkt(100, mk_ctrl(3, 1, 1, 0x02u, term_pl, 1), 3, 1);
 
     ops.on_conn_event = fake_on_conn_event;
     ll_conn_run(&ops, &conn, 3000, &st);
@@ -596,7 +598,7 @@ static void test_led_calls(void)
     fake_reset();
     static const uint8_t term_pl[] = { 0x00 };
     ev_pkt(100, mk_empty(0, 0, 0), 2, 1);
-    ev_pkt(100, mk_ctrl(1, 0, 0, 0x02u, term_pl, 1), 3, 1);
+    ev_pkt(100, mk_ctrl(1, 1, 1, 0x02u, term_pl, 1), 3, 1);
 
     ll_conn_run(&ops, &conn, 3000, &st);
 
@@ -644,7 +646,7 @@ static void test_miss_recovery(void)
     ev_miss(100);
     ev_pkt(100, mk_empty(0, 0, 0), 2, 1);       /* 恢复命中 */
     static const uint8_t term_pl[] = { 0x00 };
-    ev_pkt(100, mk_ctrl(1, 0, 0, 0x02u, term_pl, 1), 3, 1);
+    ev_pkt(100, mk_ctrl(1, 1, 1, 0x02u, term_pl, 1), 3, 1);
 
     ll_conn_run(&ops, &conn, 3000, &st);
 
@@ -662,9 +664,9 @@ static void test_conn_update_winoffset(void)
     /* WinSize=8 WinOffset=4(→5000us) Interval=40 Timeout=200 Instant=2 */
     static const uint8_t upd_pl[11] = { 8, 4, 0, 40, 0, 0, 0, 200, 0, 2, 0 };
     ev_pkt(100, mk_empty(0, 0, 0), 2, 1);
-    ev_pkt(100, mk_ctrl(1, 0, 0, 0x00u, upd_pl, 11), 14, 1);
+    ev_pkt(100, mk_ctrl(1, 1, 1, 0x00u, upd_pl, 11), 14, 1);
     ev_pkt(100, mk_empty(2, 0, 0), 2, 1);
-    ev_pkt(100, mk_empty(3, 0, 0), 2, 1);
+    ev_pkt(100, mk_empty(3, 1, 1), 2, 1);
     static const uint8_t term_pl[] = { 0x00 };
     ev_pkt(100, mk_ctrl(4, 0, 0, 0x02u, term_pl, 1), 3, 1);
 
@@ -687,7 +689,7 @@ static void test_crc_bad_no_reply(void)
     ev_pkt(100, mk_empty(0, 0, 0), 2, 0);       /* CRC 坏 */
     ev_pkt(100, mk_empty(1, 0, 0), 2, 1);       /* 正常命中 */
     static const uint8_t term_pl[] = { 0x00 };
-    ev_pkt(100, mk_ctrl(2, 0, 0, 0x02u, term_pl, 1), 3, 1);
+    ev_pkt(100, mk_ctrl(2, 1, 1, 0x02u, term_pl, 1), 3, 1);
 
     tx_before = n_tx;
     ll_conn_run(&ops, &conn, 3000, &st);
@@ -706,7 +708,7 @@ static void test_short_ctrl_unknown_rsp(void)
     static const uint8_t short_pl[2] = { 0xAA, 0xBB };
     ev_pkt(100, mk_ctrl(0, 0, 0, 0x08u, short_pl, 2), 5, 1);  /* FEATURE_REQ 缺 6 字节 */
     static const uint8_t term_pl[] = { 0x00 };
-    ev_pkt(100, mk_ctrl(1, 0, 0, 0x02u, term_pl, 1), 3, 1);
+    ev_pkt(100, mk_ctrl(1, 1, 1, 0x02u, term_pl, 1), 3, 1);
 
     ll_conn_run(&ops, &conn, 3000, &st);
 
@@ -724,9 +726,9 @@ static void test_chm_zero_rollback(void)
     fake_reset();
     static const uint8_t zero_chm[7] = { 0, 0, 0, 0, 0, 2, 0 };  /* 全零 ChM, instant=2 */
     ev_pkt(100, mk_empty(0, 0, 0), 2, 1);
-    ev_pkt(100, mk_ctrl(1, 0, 0, 0x01u, zero_chm, 7), 10, 1);
+    ev_pkt(100, mk_ctrl(1, 1, 1, 0x01u, zero_chm, 7), 10, 1);
     ev_pkt(100, mk_empty(2, 0, 0), 2, 1);       /* instant 应用点 */
-    ev_pkt(100, mk_empty(3, 0, 0), 2, 1);
+    ev_pkt(100, mk_empty(3, 1, 1), 2, 1);
     static const uint8_t term_pl[] = { 0x00 };
     ev_pkt(100, mk_ctrl(4, 0, 0, 0x02u, term_pl, 1), 3, 1);
 
@@ -739,6 +741,32 @@ static void test_chm_zero_rollback(void)
     CHECK_EQ(chan_rec[2], 15u);
     CHECK_EQ(chan_rec[3], 20u);
     CHECK_EQ(chan_rec[4], 25u);
+}
+
+/* ------------------------------------------ 重传去重 + 响应重发 -- */
+/* 重传的 ATT 请求（SN 未变）不得重复进 ATT 层；我们未被确认的响应必须
+ * 原样重发（同 SN 同载荷）——正是实板上 GET 风暴 bug 的回归用例。 */
+static void test_retransmission(void)
+{
+    ll_conn_t conn = mk_conn();
+    ll_stats_t st;
+    fake_reset();
+    static const uint8_t att_req[] = { 0x0A, 0x03, 0x00 };
+    ev_pkt(100, mk_att(0, 0, 0, att_req, 3), 9, 1);   /* 新请求 → 响应 */
+    ev_pkt(100, mk_att(1, 0, 0, att_req, 3), 9, 1);   /* 重传（未 ack）→ 原样重发 */
+    ev_pkt(100, mk_att(2, 1, 1, att_req, 3), 9, 1);   /* ack + 新请求 → 新响应 */
+    static const uint8_t term_pl[] = { 0x00 };
+    ev_pkt(100, mk_ctrl(3, 0, 0, 0x02u, term_pl, 1), 3, 1);
+
+    ll_conn_run(&ops, &conn, 3000, &st);
+
+    CHECK_EQ(n_att, 2u);                     /* 重传不重复处理 */
+    CHECK_EQ(tx_log[0][0] & 3u, 2u);         /* 响应 */
+    CHECK_EQ(tx_log[1][0] & 3u, 2u);         /* 原样重发 */
+    CHECK_EQ(tx_log[1][1], 9u);
+    CHECK_EQ((tx_log[0][0] >> 3) & 1u, (tx_log[1][0] >> 3) & 1u);  /* 同 SN */
+    CHECK_EQ(tx_log[2][0] & 3u, 2u);         /* 新响应 */
+    CHECK_EQ((tx_log[2][0] >> 3) & 1u, 1u);  /* SN 已推进 */
 }
 
 /* ------------------------------------------------ 非法 CONNECT_IND 拒绝 -- */
@@ -777,6 +805,7 @@ int main(void)
     test_conn_update_winoffset();
     test_crc_bad_no_reply();
     test_short_ctrl_unknown_rsp();
+    test_retransmission();
     test_chm_zero_rollback();
     test_bad_connind_rejected();
     TF_END();

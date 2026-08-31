@@ -19,6 +19,12 @@ uint32_t gatt_handle_att(const uint8_t *req, uint32_t req_len, uint8_t *rsp_out)
 uint32_t gatt_dbg_mtu(void);
 uint32_t gatt_dbg_txoct(void);
 
+/* 0xFFF1 值属性的 ATT 柄（写回调按柄分发；UUID 0xFFF1 只是类型）。 */
+#define GATT_FFF1_VAL_HANDLE 0x000Du
+
+/* 0xFFF1 的 CCCD 订阅状态（bit0 = notify）。断链复位（无绑定存储）。 */
+uint32_t gatt_notify_enabled(void);
+
 /* ---- 写回调（app→fw 数据通道）----
  * WRITE_CMD（no response）与 WRITE_REQ 到达时调用同一回调（WRITE_REQ
  * 额外回 ATT 响应，见 gatt.c）。值为拷贝语义：回调里即时消费。

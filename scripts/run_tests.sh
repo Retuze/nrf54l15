@@ -10,6 +10,7 @@ cmake --build "$ROOT/build/tests"
 
 rc=0
 for t in "$ROOT"/build/tests/test_*; do
+  case "$t" in *.pdb|*.ilk|*.obj) continue ;; esac   # Windows 下跳过调试符号等产物
   echo "==> run $(basename "$t")"
   "$t" || rc=1
 done
