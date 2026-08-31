@@ -113,6 +113,38 @@ static void test_find_info(void)
     expect(want_err, 5, gatt_handle_att(req_none, 5, rsp));
 }
 
+/* ------------------------------------- 客户端角色 MTU 交换 ---- */
+static void test_client_mtu_exchange(void)
+{
+    uint8_t out[8];
+    gatt_on_connect();
+    /* 未交换：pull 给出 MTU_REQ（一次性） */
+    CHECK_EQ(gatt_client_pull(out, sizeof out), 3u);
+    CHECK_EQ(out[0], 0x02u);
+    CHECK_EQ(out[1], 0xF7u);                 /* 247 LE */
+    CHECK_EQ(out[2], 0x00u);
+    CHECK_EQ(gatt_client_pull(out, sizeof out), 0u);   /* 不重发 */
+
+    /* MTU_RSP（对端 server rx=185）→ 采纳 min(247,185)，且无响应 */
+    const uint8_t rsp[] = { 0x03, 185, 0x00 };
+    CHECK_EQ(gatt_handle_att(rsp, 3, out), 0u);
+    CHECK_EQ(gatt_dbg_mtu(), 185u);
+
+    /* 重连复位后：若对端先发 MTU_REQ，我们不再发起 */
+    gatt_on_connect();
+    const uint8_t req[] = { 0x02, 0x00, 0x02 };        /* client rx=512 */
+    gatt_handle_att(req, 3, out);
+    CHECK_EQ(gatt_dbg_mtu(), 247u);                    /* min(512,247) */
+    CHECK_EQ(gatt_client_pull(out, sizeof out), 0u);
+
+    /* 迟到/未发起时的杂散 MTU_RSP：吞掉不回，也不改 MTU */
+    gatt_on_connect();
+    const uint8_t rsp2[] = { 0x03, 50, 0x00 };
+    CHECK_EQ(gatt_handle_att(rsp2, 3, out), 0u);
+    CHECK_EQ(gatt_dbg_mtu(), 23u);
+    CHECK_EQ(gatt_client_pull(out, sizeof out), 0u);   /* exch 已标完成 */
+}
+
 /* --------------------------------------------------- CCCD ---- */
 static void test_cccd_subscribe(void)
 {
@@ -286,6 +318,7 @@ int main(void)
     test_read_by_type();
     test_read_by_group();
     test_find_info();
+    test_client_mtu_exchange();
     test_cccd_subscribe();
     test_read_chunking();
     test_read_blob();

@@ -50,12 +50,29 @@ uint32_t gatt_notify_enabled(void)
     return (uint32_t)(v_cccd[0] & 0x01u);
 }
 
+/* 客户端角色 MTU 交换状态：0 = 未发起（待发），1 = 已发出等 RSP，
+ * 2 = 已完成（我们收到 RSP，或对端先发了 REQ——不再发起）。 */
+static uint8_t s_mtu_exch;
+
+uint32_t gatt_client_pull(uint8_t *out, uint32_t max)
+{
+    if (s_mtu_exch != 0u || max < 3u) {
+        return 0;
+    }
+    s_mtu_exch = 1u;                 /* 每连接一次（spec：client 只许发一次） */
+    out[0] = OP_MTU_REQ;
+    out[1] = (uint8_t)ATT_SERVER_MTU;
+    out[2] = (uint8_t)(ATT_SERVER_MTU >> 8);
+    return 3;
+}
+
 void gatt_on_connect(void)
 {
     g_mtu = 23u;
     g_tx_octets = 27u;
     v_cccd[0] = 0u;
     v_cccd[1] = 0u;
+    s_mtu_exch = 0u;
 }
 
 void gatt_set_tx_octets(uint32_t octets)
@@ -144,8 +161,21 @@ uint32_t gatt_handle_att(const uint8_t *req, uint32_t len, uint8_t *o)
         uint32_t client = (len >= 3) ? u16(req + 1) : 23u;
         g_mtu = client < ATT_SERVER_MTU ? client : ATT_SERVER_MTU;
         if (g_mtu < 23u) g_mtu = 23u;
+        s_mtu_exch = 2u;             /* 对端已交换：我们不再作为 client 发起 */
         o[0] = OP_MTU_RSP; o[1] = (uint8_t)ATT_SERVER_MTU; o[2] = (uint8_t)(ATT_SERVER_MTU >> 8);
         return 3;
+    }
+
+    case OP_MTU_RSP: {
+        /* 我们作为 client 发起的 Exchange MTU 的应答：采纳 min，双向生效。
+         * 响应 PDU 不产生回复（回 ERROR 是规范违例）。 */
+        if (s_mtu_exch == 1u && len >= 3) {
+            uint32_t server = u16(req + 1);
+            g_mtu = server < ATT_SERVER_MTU ? server : ATT_SERVER_MTU;
+            if (g_mtu < 23u) g_mtu = 23u;
+        }
+        s_mtu_exch = 2u;
+        return 0;
     }
 
     case OP_READ_BY_GROUP_REQ: {

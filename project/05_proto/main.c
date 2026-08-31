@@ -74,6 +74,10 @@ static void nq_push(const uint8_t *frag, uint32_t len)
  * 放不下时不截断（截断的帧是坏帧）：留队等下一个事件。 */
 static uint32_t att_notify_pull(uint8_t *out, uint32_t max)
 {
+    uint32_t creq = gatt_client_pull(out, max);
+    if (creq) {
+        return creq;                 /* 客户端 PDU（主动 MTU_REQ）优先于通知 */
+    }
     if (nq_count == 0u || !gatt_notify_enabled()) {
         return 0;
     }
