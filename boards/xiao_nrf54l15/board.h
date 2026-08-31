@@ -5,18 +5,23 @@
  *
  * 引脚映射 (核心):
  *   LED_R          P2.00  (低有效)
- *   KEY            P1.15  (低有效, 按下 = LOW)
- *   UART_TX / D5   P0.04  → P1.09 [ESP-AT]
- *   UART_RX / D6   P0.05  → P1.08 [ESP-AT]
- *   I2S_SCK  / D0  P1.04
- *   I2S_LRCK / D1  P1.05
- *   I2S_SDOUT/ D2  P1.06
- *   I2S_MCK  / D3  P1.07
- *   I2S_SDIN / D4  P1.10
- *   SD_SCK   / D6  P0.05 (复用, 与 UART_RX 时空隔离)
- *   SD_MOSI  / D7  P0.06
- *   SD_MISO  / D8  P0.07
- *   SD_CS    / D9  P0.08
+ *   KEY            P0.00  (低有效, 按下 = LOW)
+ *   D0  / I2S_SCK  P1.04
+ *   D1  / I2S_LRCK P1.05
+ *   D2  / I2S_SDOUT P1.06
+ *   D3  / I2S_MCK  P1.07
+ *   D4  / I2S_SDIN P1.10
+ *   D5  / I2C_SDA  P1.11
+ *   D6  / UART_TX  P2.08
+ *   D7  / UART_RX  P2.07
+ *   D8  / SPI_MOSI P2.01
+ *   D9  / SPI_SCK  P2.04
+ *   D10 / SPI_MISO P2.02
+ *   D11 / I2C_SCL  P0.03
+ *   D12            P0.04
+ *   D13            P2.10
+ *   D14            P2.09
+ *   D15            P2.06
  * 其他:
  *   RF Switch Power  P2.03
  *   RF Switch Select P2.05
@@ -55,8 +60,8 @@ extern "C" {
 #define LED_ACTIVE_LOW  1
 #define KEY_ACTIVE_LOW  1
 
-#define UART_TX_PIN  PIN_P1(9)
-#define UART_RX_PIN  PIN_P1(8)
+#define UART_TX_PIN  PIN_P1(9)   /* SAMD11_RX, UART TX */
+#define UART_RX_PIN  PIN_P1(8)   /* SAMD11_TX, UART RX */
 
 /* ---- 电池 ------------------------------------------------------------ */
 
@@ -70,11 +75,17 @@ extern "C" {
 #define D2   PIN_P1(6)
 #define D3   PIN_P1(7)
 #define D4   PIN_P1(10)
-#define D5   PIN_P0(4)
-#define D6   PIN_P0(5)
-#define D7   PIN_P0(6)
-#define D8   PIN_P0(7)
-#define D9   PIN_P0(8)
+#define D5   PIN_P1(11)
+#define D6   PIN_P2(8)
+#define D7   PIN_P2(7)
+#define D8   PIN_P2(1)
+#define D9   PIN_P2(4)
+#define D10  PIN_P2(2)
+#define D11  PIN_P0(3)
+#define D12  PIN_P0(4)
+#define D13  PIN_P2(10)
+#define D14  PIN_P2(9)
+#define D15  PIN_P2(6)
 
 /* ---- I2S 引脚 (同 D0-D4) ---------------------------------------------- */
 
@@ -84,12 +95,13 @@ extern "C" {
 #define I2S_MCK_PIN   PIN_P1(7)   /* D3 */
 #define I2S_SDIN_PIN  PIN_P1(10)  /* D4 */
 
-/* ---- SD 卡 (SPI, D6-D9) ---------------------------------------------- */
+/* ---- SD 卡 (SPI) --------------------------------------------------------
+ *  D8=MOSI(P2.01), D9=SCK(P2.04), D10=MISO(P2.02), CS 需额外 GPIO */
 
-#define SD_SCK_PIN    PIN_P0(5)
-#define SD_MOSI_PIN   PIN_P0(6)
-#define SD_MISO_PIN   PIN_P0(7)
-#define SD_CS_PIN     PIN_P0(8)
+#define SD_SCK_PIN    PIN_P2(4)   /* D9 */
+#define SD_MOSI_PIN   PIN_P2(1)   /* D8 */
+#define SD_MISO_PIN   PIN_P2(2)   /* D10 */
+#define SD_CS_PIN     PIN_P2(0)   /* 暂用 P2.00, 与 LED 共享 */
 
 /* ---- LED / Button ----------------------------------------------------- */
 

@@ -26,6 +26,7 @@ void Default_Handler(void) { while (1) { __asm volatile("nop"); } }
 extern void CLOCK_POWER_IRQHandler(void);
 extern void TIMER20_IRQHandler(void);
 extern void nrfx_i2s_20_irq_handler(void);
+extern void SERIAL20_IRQHandler(void);
 /* ---- System / fault handlers ------------------------------------------ */
 
 void Reset_Handler(void) __attribute__((noreturn));
@@ -71,6 +72,7 @@ const irq_handler_t g_pfnVectors[285] = {
     [16 + TIMER20_IRQn]      = TIMER20_IRQHandler,      /* P2.00 软件 PWM（无 GPIOTE） */
     [16 + CLOCK_POWER_IRQn]  = CLOCK_POWER_IRQHandler,  /* nrfx clock / power */
     [16 + I2S20_IRQn]        = nrfx_i2s_20_irq_handler, /* I2S20 正弦波输出 */
+    [16 + UARTE20_IRQn]      = SERIAL20_IRQHandler,      /* UARTE20 DMA TX */
 
     /* MPSL/SDC (Phase 2): add [16 + TIMER10_IRQn], [16 + GRTC_3_IRQn], etc. when linked */
 };

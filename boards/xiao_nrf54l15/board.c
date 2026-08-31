@@ -263,54 +263,9 @@ void board_init(void)
 
     rtt_init();
     shell_init(&g_shell, shell_rtt_output);
-    serialBegin(115200);
-    {
-        static const char boot_msg[] = "XIAO nRF54L15 UART ready\r\n";
-        serialWrite((const uint8_t *)boot_msg, sizeof(boot_msg) - 1u);
-    }
 
-    /* ---- Onboard LED ------------------------------------------------- */
-    pinMode(LED_PIN, OUTPUT);
-
-    led_indicator_cfg_t led_cfg = {
-        .set_on  = board_led_set_on,
-        .set_pwm = board_led_set_pwm,
-        .tick_ms = board_tick_ms,
-        .ctx     = NULL,
-    };
-    led_indicator_init(&s_board_led, &led_cfg);
-
-    /* ---- Onboard KEY ------------------------------------------------- */
-#if KEY_ACTIVE_LOW
-    pinMode(KEY_PIN, INPUT_PULLUP);
-#else
-    pinMode(KEY_PIN, INPUT_PULLDOWN);
-#endif
-
-    /* ---- RF antenna switch -------------------------------------------- */
-    /*
-     * XIAO nRF54L15 RF antenna switch:
-     *   P2.03 = RF switch power → HIGH powers the SP3T switch
-     *   P2.05 = RF switch select → LOW = PCB antenna, HIGH = IPEX/u.FL
-     */
-    pinMode(PIN_P2(3), OUTPUT);
-    digitalWrite(PIN_P2(3), HIGH);
-    pinMode(PIN_P2(5), OUTPUT);
-    digitalWrite(PIN_P2(5), LOW);
-
-    /* ---- Button instance ---------------------------------------------- */
-    button_cfg_t btn_cfg = {
-        .read_pressed = board_button_read_pressed,
-        .tick_ms      = board_tick_ms,
-        .ctx          = NULL,
-    };
-    button_init(&s_board_btn, &btn_cfg);
-
-    /* ---- SD card ---------------------------------------------------- */
-    // board_sd_init();
-
-    /* Audio playback (I2S PCM / Opus) deferred to app_init() —
-     * the RT-Thread priority table isn't ready yet. */
+    /* 硬件 UART (UARTE20, P1.9 TX / P1.8 RX), 对接到 SAMD11 调试器串口 */
+    // serialBegin(9600);
 }
 
 /* ---- I2S 回环测试 (Full-Duplex TX+RX) ---------------------------------- */

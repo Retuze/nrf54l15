@@ -8,9 +8,10 @@
 extern "C" {
 #endif
 
-/* Arduino 风格串口 API */
+/* 硬件串口 API — UARTE20, EasyDMA + 中断驱动 */
 void serialBegin(uint32_t baud);
 void serialWrite(const uint8_t *buf, size_t len);
+void serialFlush(void);
 
 #ifdef __cplusplus
 }
