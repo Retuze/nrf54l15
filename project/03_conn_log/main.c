@@ -1,16 +1,14 @@
 /*
- * 01_conn — bare-metal BLE peripheral that actually ENTERS a connection.
+ * 03_conn_log — 连接态实时日志实验（方案 A：异步日志）。
  *
- * 应用层只剩装配：初始化各驱动、把驱动函数和 gatt 回调接线进 ll_ops，
- * 然后跑 adv 主循环。协议（LL）在 common/bluetooth/ll，寄存器在 drivers/。
+ * 与 01_conn 完全相同的链路，加一条非阻塞日志通道（common/log）：
+ *   - ll 的 on_conn_event 钩子在每个事件 reply 之后调用（~interval 松弛的
+ *     安全插桩点），log_printf 只做"格式化 + 入队"（微秒级）
+ *   - uart_tx 入队即返（驱动内 512B ring），TX END 中断后台排空到串口
+ *   - 打印策略（全工程）：printf 只归 HardFault，日常日志统一走 log
  *
- * Flow:
- *   1. ll_adv_sweep：广播 ADV_IND on 37/38/39，监听 CONNECT_IND。
- *   2. On CONNECT_IND：ll_conn_run 阻塞到断链（TERMINATE 或 supervision
- *      超时），期间应答 LL control / ATT 请求，维持 SN/NESN，CSA#1 跳频，
- *      软件 T_IFS 回复（时序在 drivers/radio）。
- *
- * All state is logged over UART — read scripts/serial.log.
+ * 观察：连接中串口逐事件打出 "evt=N ok/miss ch=X"，log_dropped 显示因
+ * 打太猛而丢弃的字节数。
  */
 
 #include <stdint.h>
@@ -26,7 +24,6 @@
 #include "log.h"
 
 /* ---------------------------------------------------------------- LED -- */
-/* 板头只给端口号；线性编号由 GPIO_PIN 组合，P2 独立寄存器组的映射在 gpio 驱动内。 */
 #define LED GPIO_PIN(BOARD_LED_PORT, BOARD_LED_PIN)
 
 static void led_set(int on)
@@ -42,10 +39,14 @@ static uint32_t rng_next(void)
     rng_state = x; return x;
 }
 
-/* Random static address F0:E0:D0:C0:B0:A0 (top two bits of MSB = 11). */
 static const uint8_t OUR_ADDR[6] = { 0xA0, 0xB0, 0xC0, 0xD0, 0xE0, 0xF0 };
 
-/* -------------------------------------------- 驱动 → LL 的 ops 接线 -- */
+/* ---------------------------------------- 连接事件观察（安全插桩点） -- */
+static void on_conn_event(uint32_t counter, int crc_ok, uint32_t ch)
+{
+    log_printf("evt=%u %s ch=%u\n", counter, crc_ok ? "ok" : "miss", ch);
+}
+
 static const ll_ops_t OPS = {
     .now_us   = time_now_us,
     .delay_us = time_delay_us,
@@ -61,6 +62,7 @@ static const ll_ops_t OPS = {
     .mtu_get    = gatt_dbg_mtu,
     .txoct_get  = gatt_dbg_txoct,
     .led        = led_set,
+    .on_conn_event = on_conn_event,
 };
 
 /* ---------------------------------------------------------------- main -- */
@@ -91,17 +93,15 @@ int main(void)
     gatt_init();
     ll_init(OUR_ADDR);
 
-    /* picolibc 冒烟：验证 malloc 堆（sbrk） + 64 位格式化
-     * （%llu 需要 picolibc 构建时的 -Dio-long-long=true） */
     void *smoke = malloc(64);
     log_printf("picolibc ready: grtc=%llu us, malloc=%p\n",
                (unsigned long long)time_now_us(), smoke);
     free(smoke);
 
     rng_state = (uint32_t)time_now_us() | 1u;
-    log_puts("\n=== 54L-GATT connectable + scannable ===\n");
+    log_puts("\n=== 54L-GATT connectable + scannable (live log) ===\n");
 
-    /* 闹钟自检：一次性 CC 闹钟 +5ms，回调在 IRQ 上下文只置 flag */
+    /* 闹钟自检 */
     time_alarm_set(0, time_now_us() + 5000u, alarm_self_cb);
     while (!alarm_hit) { }
     log_puts("alarm self-test ok\n");
@@ -120,8 +120,9 @@ int main(void)
             log_printf("[conn] mtu=%u txoct=%u maxrsp=%u tx_timeouts=%u\n",
                     st.mtu, st.tx_octets, st.maxrsp, st.tx_timeouts);
             log_printf("[conn] rx_end->tx_end gap=%uus (expect ~230)\n", st.gap_us);
+            log_printf("[conn] log_dropped=%u bytes\n", log_dropped());
             uint32_t cnt = st.rxpdu_n < 6u ? st.rxpdu_n : 6u;
-            uint32_t base = st.rxpdu_n - cnt;    /* oldest still-kept index */
+            uint32_t base = st.rxpdu_n - cnt;
             for (uint32_t j = 0; j < cnt; j++) {
                 uint32_t slot = (base + j) % 6u;
                 uint32_t llid = st.rxpdu[slot][0] & 0x3u;

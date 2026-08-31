@@ -1,10 +1,8 @@
 /*
- * syscalls.c — picolibc 系统调用的落点与桩。
+ * syscalls.c — picolibc 系统调用的弱桩。
  *
- * 策略：有真实后端的给强实现，其余给返回"不支持"的弱桩——
- *   - 强实现：write —— 控制台 fd → drivers/uart 的 uart_write。当前只有一个
- *     输出设备，所有 fd 一律路由到 UART；将来有 USBD-CDC 等第二输出时
- *     在这里按 fd 分发。
+ * 策略：强实现（write）在 drivers/console/console.c（控制台模块持有自己的
+ * uart 实例）；这里只放返回"不支持"的弱桩——
  *   - 弱桩 -1：本环境没有文件系统（open/lseek/fstat）、没有输入通路
  *     （read，板载 SAMD11 USB 桥只接了 TX）、没有多进程（kill/getpid）。
  *     在 POSIX 语义下，-1 就是"不支持"的正确返回值——是设计如此，不是没实现。
@@ -19,15 +17,6 @@
  */
 #include <stddef.h>
 #include <sys/types.h>   /* ssize_t */
-#include "uart.h"
-
-/* ------------------------------ 强实现：控制台输出 ------------------- */
-ssize_t write(int fd, const void *buf, size_t len)
-{
-    (void)fd;   /* 当前只有一个输出设备，fd 不分发 */
-    uart_write(buf, (uint32_t)len);
-    return (ssize_t)len;
-}
 
 /* ------------------------------ 弱桩：不支持的操作 ------------------- */
 

@@ -3,7 +3,8 @@
  *
  * 约定：这里只写"这块板子的硬件事实"（接哪根引脚、有哪些外设、怎么烧录），
  * 不写行为开关（放实验 config.h）也不写寄存器（放 vendor/mdk）。
- * 引脚用裸数字宏（PORT + PIN）——54L 暂无 gpio 驱动，PORT 对应寄存器组 NRF_Pn_S。
+ * 引脚用裸数字宏（PORT + PIN）——代码里经 gpio 驱动的 GPIO_PIN() 组合成
+ * 线性编号（PORT→NRF_Pn_S 的映射在 drivers/gpio 内部）。
  */
 #pragma once
 
@@ -23,7 +24,9 @@
 
 /* ---- 调试串口 ------------
  * UARTE20 TX = P1.09，路由到板载 SAMD11 USB-serial 桥。115200 8N1。
+ * 引脚是硬件事实；用哪个 UARTE 实例是选择，默认 20（应用核有 20/21/22/30）。
  */
+#define BOARD_CONSOLE_UARTE     20u
 #define BOARD_CONSOLE_TX_PORT   1u
 #define BOARD_CONSOLE_TX_PIN    9u
 

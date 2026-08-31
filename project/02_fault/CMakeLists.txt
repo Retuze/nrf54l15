@@ -12,10 +12,10 @@ project(02_fault C)
 # 3) 通用构建辅助
 include(${PROJ_ROOT}/cmake/embedded.cmake)
 
-# 4) 依赖（芯片驱动单库；本实验不用 common 协议库）
-set(NRF54_CONSOLE_CFG_DIR     ${CMAKE_CURRENT_SOURCE_DIR})
-set(NRF54_CONSOLE_BOARDS_DIR  ${PROJ_ROOT}/boards)
+# 4) 依赖（芯片驱动单库；本实验不用 common 协议库，但 drivers 的 uart
+#    异步 TX 依赖 common/ring，目标需要存在）
 add_subdirectory(${PROJ_ROOT}/drivers drivers)
+add_subdirectory(${PROJ_ROOT}/common common)
 
 # 5) 应用本体（startup.c/link.ld 默认共用 drivers/core/ 的共享版）
 add_executable(02_fault main.c)

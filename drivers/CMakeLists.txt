@@ -3,23 +3,30 @@
 
 add_library(drivers STATIC
   core/syscalls.c
-  grtc/grtc.c
+  clock/clock.c
+  console/console.c
+  gpio/gpio.c
+  radio/radio.c
+  time/time.c
+  timer/timer.c
   uart/uart.c)
 # 驱动头 + vendor（nrf.h 等 Nordic MDK/CMSIS 头）经 PUBLIC 传给应用
 target_include_directories(drivers PUBLIC
-  ${CMAKE_CURRENT_SOURCE_DIR}/grtc
+  ${CMAKE_CURRENT_SOURCE_DIR}/console
+  ${CMAKE_CURRENT_SOURCE_DIR}/core
+  ${CMAKE_CURRENT_SOURCE_DIR}/clock
+  ${CMAKE_CURRENT_SOURCE_DIR}/gpio
+  ${CMAKE_CURRENT_SOURCE_DIR}/radio
+  ${CMAKE_CURRENT_SOURCE_DIR}/time
+  ${CMAKE_CURRENT_SOURCE_DIR}/timer
   ${CMAKE_CURRENT_SOURCE_DIR}/uart
+  ${PROJ_ROOT}/common/ring
   ${PROJ_ROOT}/vendor/mdk
   ${PROJ_ROOT}/vendor/cmsis)
-# uart.c 用了 picolibc 头（stdio.h 的 struct __file）；无 libc 目标时跳过
+# uart 的 TX ring 用 common/ring；console 的默认 log sink 用 common/log
+# （纯软件，无反向依赖）；目标在 common/ 定义，CMake 生成期解析名字即可
+target_link_libraries(drivers PUBLIC ring log)
+# startup.c 用了 picolibc 头（stdio.h 的 printf）；无 libc 目标时跳过
 if(DEFINED EMBED_PICOLIBC_BASE AND NOT EMBED_PICOLIBC_BASE STREQUAL "")
   target_include_directories(drivers SYSTEM PRIVATE ${EMBED_PICOLIBC_BASE}/include)
-endif()
-# uart.c 的"控制台接线"：由实验声明配置链（目录 + 板库）——config.h 与
-# 它 include 的板头在 uart.c 编译时可见（含 CONFIG_CONSOLE_TX_* 宏）
-if(DEFINED NRF54_CONSOLE_CFG_DIR)
-  target_include_directories(drivers SYSTEM PRIVATE ${NRF54_CONSOLE_CFG_DIR})
-endif()
-if(DEFINED NRF54_CONSOLE_BOARDS_DIR)
-  target_include_directories(drivers SYSTEM PRIVATE ${NRF54_CONSOLE_BOARDS_DIR})
 endif()

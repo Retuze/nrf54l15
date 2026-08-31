@@ -33,6 +33,15 @@
 static uint32_t g_mtu       = 23u;   /* effective ATT MTU  (min of the two)   */
 static uint32_t g_tx_octets = 27u;   /* effective data-PDU payload we may send */
 
+static gatt_write_cb_t s_write_cb;
+static void *s_write_arg;
+
+void gatt_set_write_cb(gatt_write_cb_t cb, void *arg)
+{
+    s_write_cb = cb;
+    s_write_arg = arg;
+}
+
 void gatt_on_connect(void)
 {
     g_mtu = 23u;
@@ -74,9 +83,10 @@ static const uint8_t v_ppcp[]      = { 0x18, 0x00, 0x28, 0x00, 0x00, 0x00, 0xF4,
 static const uint8_t v_bat_svc[]   = { 0x0F, 0x18 };
 static const uint8_t v_batl_decl[] = { 0x02, 0x0A, 0x00, 0x19, 0x2A };
 static const uint8_t v_batl[]      = { 0x64 };
-/* Custom service 0xFFF0 with a big read characteristic 0xFFF1. */
+/* Custom service 0xFFF0 with characteristic 0xFFF1：Read | WriteWithoutResponse
+ * | Notify——固件/app 应用协议（common/proto）的数据通道。 */
 static const uint8_t v_cust_svc[]  = { 0xF0, 0xFF };
-static const uint8_t v_big_decl[]  = { 0x02, 0x0D, 0x00, 0xF1, 0xFF };
+static const uint8_t v_big_decl[]  = { 0x16, 0x0D, 0x00, 0xF1, 0xFF };
 
 static const attr_t db[] = {
     { 0x0001, 0x2800, v_gap_svc,   sizeof(v_gap_svc)   },
@@ -208,10 +218,22 @@ uint32_t gatt_handle_att(const uint8_t *req, uint32_t len, uint8_t *o)
     }
 
     case OP_WRITE_CMD:
+        /* Write Without Response：应用协议的上行通道（proto 帧）。
+         * 无 ATT 响应——协议层用自己的 ACK（MSG_ID 幂等重发兜底）。 */
+        if (s_write_cb && len >= 3) {
+            s_write_cb(u16(req + 1), req + 3, len - 3u, s_write_arg);
+        }
         return 0;
 
     case OP_WRITE_REQ: {
+        /* Write With Response：同一写回调（调试工具默认走这条），
+         * 额外回一条空 ATT 响应。无回调时维持 E_WRITE_NOT_PERM。 */
         uint16_t h = (len >= 3) ? u16(req + 1) : 0;
+        if (s_write_cb && len >= 3) {
+            s_write_cb(h, req + 3, len - 3u, s_write_arg);
+            o[0] = 0x13u;                /* WRITE_RSP（无附加字段） */
+            return 1;
+        }
         return att_err(o, op, h, E_WRITE_NOT_PERM);
     }
 

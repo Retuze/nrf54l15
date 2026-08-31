@@ -14,13 +14,27 @@ if [ $# -eq 0 ]; then
       [0-9][0-9]_*) ;;
       *) continue ;;
     esac
-    if "$0" "$n" >/tmp/check_"$n".log 2>&1; then
+    if SKIP_COV=1 "$0" "$n" >/tmp/check_"$n".log 2>&1; then
       echo "[PASS] $n"
     else
       echo "[FAIL] $n —— /tmp/check_$n.log"
       FAILED=1
     fi
   done
+  # host 侧协议单测（common 的注入测试）
+  if "$ROOT/scripts/run_tests.sh" >/tmp/check_hosttests.log 2>&1; then
+    echo "[PASS] host-tests"
+  else
+    echo "[FAIL] host-tests —— /tmp/check_hosttests.log"
+    FAILED=1
+  fi
+  # 覆盖率门槛（common 行覆盖 >= 80%）
+  if "$ROOT/scripts/coverage.sh" 80 >/tmp/check_coverage.log 2>&1; then
+    echo "[PASS] coverage"
+  else
+    echo "[FAIL] coverage —— /tmp/check_coverage.log"
+    FAILED=1
+  fi
   exit $FAILED
 fi
 
@@ -82,8 +96,9 @@ check(words[1] == syms["Reset_Handler"] + 1,
 check(words[1] & 1 == 1, "Reset 入口 Thumb 位置位")
 check(0x20000000 <= syms["_estack"] <= 0x20000000 + 0x40000,
       f"_estack 在 RAM 范围: {syms['_estack']:#010x}")
+# 0x17D000 = 1524KB：RRAM 别名区上界（镜像 LMA 必然落在其内）
 check(0 <= syms["_sidata"] < 0x17D000,
-      f"_sidata 在 RRAM 范围: {syms['_sidata']:#010x}")
+      f"_sidata 在 RRAM 别名区范围: {syms['_sidata']:#010x}")
 check(0x20000000 <= syms["_sdata"] <= 0x20040000,
       f"_sdata 在 RAM 范围: {syms['_sdata']:#010x}")
 check(0x20000000 <= syms["_sbss"] <= 0x20040000,
@@ -92,5 +107,12 @@ check(0x20000000 <= syms["_sbss"] <= 0x20040000,
 print("PASS" if fail == 0 else "存在断言失败")
 sys.exit(1 if fail else 0)
 EOF
+
+# host 侧协议单测（common 的注入测试）+ 覆盖率门槛（全量模式循环内跳过
+# 单测由循环后统一跑，避免 N+1 次重复）
+"$ROOT/scripts/run_tests.sh" || exit 1
+if [ "${SKIP_COV:-0}" != "1" ]; then
+  "$ROOT/scripts/coverage.sh" 80 || exit 1
+fi
 
 echo "==> check.sh 通过：$NAME"

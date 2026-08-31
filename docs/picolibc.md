@@ -22,7 +22,7 @@ meson setup build-arm-cortex-m33 ~/picolibc/src \
 | `tests` | false | 不开单元测试（测试要 QEMU/semihost 运行环境，交叉构建用不上） |
 | `picocrt` | false | 不用 picolibc 的 crt0/启动代码——工程有自己的 `startup.c`（向量表 + 数据段拷贝 + `_set_tls` + `__libc_init_array`） |
 | `specsdir` | none | 不安装 gcc specs 文件（我们用 clang + 显式链接参数，不走 `-specs=picolibc.specs`） |
-| `io-long-long` | true | printf/scanf 支持 `%llu` 等 64 位转换（grtc 的 52 位时间戳日志要用）；代价约 +1.5K text |
+| `io-long-long` | true | printf/scanf 支持 `%llu` 等 64 位转换（time 驱动的 52 位时间戳日志要用）；代价约 +1.5K text |
 | `posix-console` | true | 库里预装 fd 0/1/2 的带缓冲 FILE（`FDEV_SETUP_POSIX`，512B 缓冲、行缓冲 `__BLBF`，换行即 flush），底层走 `write(fd)`；应用侧提供 `_write` 强实现（drivers/uart/uart.c）落地。`stdout/stdin/stderr` 是**弱符号**，应用想接管仍可给强定义 |
 
 ### 保留默认值的关键选项（meson_options.txt 全表在 `~/picolibc/src/meson_options.txt`）

@@ -7,7 +7,7 @@ include(${PROJ_ROOT}/cmake/targets/nrf54l15.cmake)
 # 2) 通用交叉工具链（clang + lld）
 set(CMAKE_TOOLCHAIN_FILE ${PROJ_ROOT}/cmake/toolchain.cmake
     CACHE STRING "" FORCE)
-project(01_conn C)
+project(06_timer C)
 
 # 3) 通用构建辅助
 include(${PROJ_ROOT}/cmake/embedded.cmake)
@@ -16,10 +16,8 @@ include(${PROJ_ROOT}/cmake/embedded.cmake)
 add_subdirectory(${PROJ_ROOT}/drivers drivers)
 add_subdirectory(${PROJ_ROOT}/common  common)
 
-# 5) 应用本体（startup.c/link.ld 默认共用 drivers/core/ 的共享版；
-#    要自定义就把同名文件放进本目录，embedded_app 自动改用工程自己的版本）
-add_executable(01_conn main.c)
-# 板库 include（boards/，可整体替换为外部目录；main.c 直接 include 板头）
-target_include_directories(01_conn PRIVATE ${PROJ_ROOT}/boards)
-embedded_app(01_conn)
-target_link_libraries(01_conn PRIVATE drivers gatt ll)
+# 5) 应用本体（startup.c/link.ld 默认共用 drivers/core/ 的共享版）
+add_executable(06_timer main.c)
+target_include_directories(06_timer PRIVATE ${PROJ_ROOT}/boards)
+embedded_app(06_timer)
+target_link_libraries(06_timer PRIVATE drivers ring log)

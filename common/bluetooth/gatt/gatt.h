@@ -19,4 +19,12 @@ uint32_t gatt_handle_att(const uint8_t *req, uint32_t req_len, uint8_t *rsp_out)
 uint32_t gatt_dbg_mtu(void);
 uint32_t gatt_dbg_txoct(void);
 
+/* ---- 写回调（app→fw 数据通道）----
+ * WRITE_CMD（no response）与 WRITE_REQ 到达时调用同一回调（WRITE_REQ
+ * 额外回 ATT 响应，见 gatt.c）。值为拷贝语义：回调里即时消费。
+ * 不注册回调时 WRITE_REQ 维持 E_WRITE_NOT_PERM、WRITE_CMD 静默丢弃。 */
+typedef uint32_t (*gatt_write_cb_t)(uint16_t handle, const uint8_t *val,
+                                    uint32_t len, void *arg);
+void gatt_set_write_cb(gatt_write_cb_t cb, void *arg);
+
 #endif /* GATT_H */

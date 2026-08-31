@@ -1,0 +1,314 @@
+/*
+ * 05_proto — 应用协议固件接线（common/proto over BLE GATT 0xFFF1）。
+ *
+ * 数据通路（规格 docs/proto.md）：
+ *   上行 app→fw：WRITE_CMD/WRITE_REQ → gatt 写回调 → proto_feed
+ *               （一个 write = 一个 proto 传输帧，SET 分片由 proto 重组）
+ *   下行 fw→app：proto 传输帧 → 通知帧队列（4 槽）→ ll att_notify_pull
+ *               （每个连接事件顶替空回复发一条，DLE 完成后才发大帧）
+ *
+ * 首次同步：app GET_REQ{} → fw REPORT{5 字段} ACK_REQ（状态类必须送达）
+ *   → app ACK{0, id} → fw 清重发状态；超时 500ms 同 id 重发（on_conn_event
+ *   里查——连接期主循环被 ll_conn_run 占用，事件钩子是唯一周期入口）。
+ *
+ * SET{TIME}：epoch 落 epoch_offset_us（日志可打绝对时间）；回 ACK 带 err。
+ */
+
+#include <stdint.h>
+#include <stdlib.h>
+#include "xiao_nrf54l15.h"
+#include "gpio.h"
+#include "time.h"
+#include "console.h"
+#include "clock.h"
+#include "radio.h"
+#include "ll.h"
+#include "gatt.h"
+#include "proto.h"
+#include "log.h"
+
+/* ---------------------------------------------------------------- LED -- */
+#define LED GPIO_PIN(BOARD_LED_PORT, BOARD_LED_PIN)
+
+static void led_set(int on)
+{
+    gpio_write(LED, on ? BOARD_LED_ACTIVE_LEVEL : !BOARD_LED_ACTIVE_LEVEL);
+}
+
+/* --------------------------------------------------------------- misc -- */
+static uint32_t rng_state;
+static uint32_t rng_next(void)
+{
+    uint32_t x = rng_state; x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+    rng_state = x; return x;
+}
+
+static const uint8_t OUR_ADDR[6] = { 0xA0, 0xB0, 0xC0, 0xD0, 0xE0, 0xF0 };
+
+/* -------------------------------------- 通知帧队列（proto send 落点） -- */
+#define NOTIFY_SLOTS 4u
+#define NOTIFY_FRAME_MAX 248u   /* ATT 载荷上限 244（mtu 247-3），留余量 */
+static uint8_t  nq_buf[NOTIFY_SLOTS][NOTIFY_FRAME_MAX];
+static uint16_t nq_len[NOTIFY_SLOTS];
+static uint8_t  nq_head, nq_tail, nq_count;
+static uint32_t nq_dropped;
+
+static void nq_push(const uint8_t *frag, uint32_t len)
+{
+    if (len > NOTIFY_FRAME_MAX || nq_count == NOTIFY_SLOTS) {
+        nq_dropped++;                        /* 满/超长：丢新（mtu 244 下不该发生） */
+        return;
+    }
+    for (uint32_t i = 0; i < len; i++) {
+        nq_buf[nq_tail][i] = frag[i];
+    }
+    nq_len[nq_tail] = (uint16_t)len;
+    nq_tail = (uint8_t)((nq_tail + 1u) % NOTIFY_SLOTS);
+    nq_count++;
+}
+
+/* ll 的 att_notify_pull：每个连接事件取一条（ATT 载荷即 proto 传输帧）。
+ * 放不下时不截断（截断的帧是坏帧）：留队等下一个事件。 */
+static uint32_t att_notify_pull(uint8_t *out, uint32_t max)
+{
+    if (nq_count == 0u) {
+        return 0;
+    }
+    uint32_t n = nq_len[nq_head];
+    if (n > max) {
+        return 0;
+    }
+    for (uint32_t i = 0; i < n; i++) {
+        out[i] = nq_buf[nq_head][i];
+    }
+    nq_head = (uint8_t)((nq_head + 1u) % NOTIFY_SLOTS);
+    nq_count--;
+    return n;
+}
+
+/* ------------------------------------------------ proto 装配 -- */
+static void proto_send_cb(const uint8_t *frag, uint32_t len, void *arg)
+{
+    (void)arg;
+    nq_push(frag, len);
+}
+static uint32_t proto_mtu_cb(void) { return 244u; }
+
+/* REPORT 字段静态存储（重发需要稳定引用） */
+static uint8_t  bat_val[4];                 /* level, voltage_mv u16, flags */
+static uint8_t  time_val[6];                /* epoch_s u32, tz_min i16 */
+static const uint8_t dev_val[] = { 0, 1, 0, 1, '5', '4', 'L' };  /* 0.1.0, hw1, "54L" */
+static uint8_t  up_val[4];
+static uint8_t  stat_val[4];
+static int64_t  epoch_offset_us;            /* 墙钟 = time_now_us() + offset */
+
+static uint8_t fw_msg_id;
+static uint8_t pending_report_id = 0xFFu;   /* 0xFF = 无待确认 REPORT */
+static uint64_t report_deadline_us;
+static uint32_t report_retries;
+
+/* SET 幂等去重：同 msg_id 重发只回 ACK 不重复执行（协议层承诺，见
+ * docs/proto.md）；0xFF = 无历史 */
+static uint8_t last_set_id = 0xFFu;
+
+static void put_be16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)(v >> 8); p[1] = (uint8_t)v; }
+static void put_be32(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16);
+    p[2] = (uint8_t)(v >> 8);  p[3] = (uint8_t)v;
+}
+
+static void fill_fields(void)
+{
+    bat_val[0] = 85u;                        /* 演示值；VBAT ADC 校准留后 */
+    put_be16(bat_val + 1, 3600u);
+    bat_val[3] = 0u;
+    uint64_t epoch_us = (uint64_t)time_now_us() + (uint64_t)epoch_offset_us;
+    put_be32(time_val, (uint32_t)(epoch_us / 1000000u));
+    put_be16(time_val + 4, 480u);            /* UTC+8（SET 可改） */
+    put_be32(up_val, (uint32_t)(time_now_us() / 1000000u));
+    put_be32(stat_val, 1u);                  /* bit0 = BLE connected */
+}
+
+static void proto_send_full_report(uint8_t msg_id)
+{
+    fill_fields();
+    proto_tlv_t tlvs[5] = {
+        { PROTO_T_BATTERY,  4, bat_val },
+        { PROTO_T_TIME,     6, time_val },
+        { PROTO_T_DEV_INFO, (uint8_t)sizeof(dev_val), dev_val },
+        { PROTO_T_UPTIME,   4, up_val },
+        { PROTO_T_STATUS,   4, stat_val },
+    };
+    proto_report(tlvs, 5, msg_id, 1);        /* ACK_REQ：状态类必须送达 */
+    pending_report_id = msg_id;
+    report_deadline_us = time_now_us() + 500000u;
+}
+
+/* fw 侧协议回调 */
+static void on_get_cb(const uint8_t *types, uint32_t n, uint8_t msg_id)
+{
+    (void)types; (void)n;                    /* 简化：一律全量上报 */
+    report_retries = 0;
+    proto_send_full_report(fw_msg_id++);
+    log_printf("[proto] GET id=%u -> full report\n", msg_id);
+}
+
+static void on_set_cb(const proto_tlv_t *tlvs, uint32_t n, uint8_t msg_id)
+{
+    /* 幂等去重：同 id 重发（app 超时重传）只重发 ACK，不重复执行 */
+    if (msg_id == last_set_id) {
+        proto_ack(0u, msg_id);
+        log_printf("[proto] SET id=%u dup, re-ack\n", msg_id);
+        return;
+    }
+    last_set_id = msg_id;
+
+    uint8_t err = 1u;                        /* 1 = 无已知字段 */
+    for (uint32_t i = 0; i < n; i++) {
+        if (tlvs[i].t == PROTO_T_TIME && tlvs[i].l == 6u) {
+            uint32_t epoch = ((uint32_t)tlvs[i].v[0] << 24) |
+                             ((uint32_t)tlvs[i].v[1] << 16) |
+                             ((uint32_t)tlvs[i].v[2] << 8)  | tlvs[i].v[3];
+            epoch_offset_us = (int64_t)epoch * 1000000LL -
+                              (int64_t)time_now_us();
+            err = 0u;
+        }
+    }
+    proto_ack(err, msg_id);
+    log_printf("[proto] SET n=%u err=%u\n", n, err);
+}
+
+static void on_ack_cb(uint8_t err, uint8_t msg_id)
+{
+    if (msg_id == pending_report_id) {
+        pending_report_id = 0xFFu;           /* 状态送达，清重发 */
+        report_retries = 0;
+        log_printf("[proto] report %u acked err=%u\n", msg_id, err);
+    }
+}
+
+static proto_ops_t proto_ops_ = {
+    .send = proto_send_cb,
+    .mtu_get = proto_mtu_cb,
+    .arg = 0,
+    .on_get = on_get_cb,
+    .on_set = on_set_cb,
+    .on_report = 0,
+    .on_ack = on_ack_cb,
+};
+
+/* gatt 写回调：0xFFF1 一个 write = 一个 proto 传输帧 */
+static uint32_t att_write_cb(uint16_t handle, const uint8_t *val, uint32_t len,
+                             void *arg)
+{
+    (void)arg;
+    if (handle == 0xFFF1u) {
+        proto_feed(val, len);
+    }
+    return 0;
+}
+
+/* 连接事件钩子：ACK_REQ REPORT 超时重发（连接期唯一周期入口），
+ * 3 次未确认上抛（多半已断链） */
+static void on_conn_event_cb(uint32_t counter, int crc_ok, uint32_t ch)
+{
+    (void)counter; (void)crc_ok; (void)ch;
+    if (pending_report_id != 0xFFu && time_now_us() > report_deadline_us) {
+        if (report_retries >= 3u) {
+            log_printf("[proto] report %u unacked after %u retries\n",
+                       pending_report_id, report_retries);
+            pending_report_id = 0xFFu;
+            return;
+        }
+        proto_send_full_report(pending_report_id);   /* 同 id 同载荷 */
+        report_retries++;
+        log_puts("[proto] report retry\n");
+    }
+}
+
+static const ll_ops_t OPS = {
+    .now_us   = time_now_us,
+    .delay_us = time_delay_us,
+    .radio_set_aa      = radio_set_aa,
+    .radio_set_channel = radio_set_channel,
+    .radio_disable     = radio_disable,
+    .radio_tx          = radio_tx,
+    .radio_rx          = radio_rx,
+    .radio_reply_at    = radio_reply_at,
+    .att_handle = gatt_handle_att,
+    .on_dle     = gatt_set_tx_octets,
+    .on_connect = gatt_on_connect,
+    .mtu_get    = gatt_dbg_mtu,
+    .txoct_get  = gatt_dbg_txoct,
+    .led        = led_set,
+    .on_conn_event  = on_conn_event_cb,
+    .att_notify_pull = att_notify_pull,
+};
+
+/* ---------------------------------------------------------------- main -- */
+static const uart_cfg_t console_cfg = {
+        .tx_pin = GPIO_PIN(BOARD_CONSOLE_TX_PORT, BOARD_CONSOLE_TX_PIN),
+    .rx_pin = UART_PIN_NONE,            /* 板载 SAMD11 桥只接了 TX */
+    .baud = UART_BAUD_115200,
+    .fmt = UART_8N1,
+    .irq_prio = 0,};
+
+/* 闹钟自检：一次性 CC 闹钟 +5ms，回调在 IRQ 上下文只置 flag */
+static volatile int alarm_hit;
+static void alarm_self_cb(uint32_t ch)
+{
+    (void)ch;
+    alarm_hit = 1;
+}
+
+int main(void)
+{
+    gpio_mode(LED, GPIO_OUTPUT);
+    led_set(0);
+    console_init(UARTE20, &console_cfg);
+    console_log_init();   /* 打印策略：日志统一走 log（printf 仅 HardFault） */
+    clock_hfxo_start();
+    time_init();
+    radio_init();
+    gatt_init();
+    gatt_set_write_cb(att_write_cb, 0);
+    proto_init(&proto_ops_);
+    ll_init(OUR_ADDR);
+
+    void *smoke = malloc(64);
+    log_printf("picolibc ready: grtc=%llu us, malloc=%p\n",
+               (unsigned long long)time_now_us(), smoke);
+    free(smoke);
+
+    rng_state = (uint32_t)time_now_us() | 1u;
+    log_puts("\n=== 54L-GATT + app proto (GET/REPORT/SET/ACK) ===\n");
+
+    /* 闹钟自检 */
+    time_alarm_set(0, time_now_us() + 5000u, alarm_self_cb);
+    while (!alarm_hit) { }
+    log_puts("alarm self-test ok\n");
+
+    ll_conn_t conn;
+    ll_stats_t st;
+    ll_adv_stats_t ast = { 0 };
+    uint32_t adv_events = 0;
+
+    for (;;) {
+        uint64_t t_ci_end = 0;
+        if (ll_adv_sweep(&OPS, &conn, &t_ci_end, &ast)) {
+            ll_conn_run(&OPS, &conn, t_ci_end, &st);    /* blocks until link lost */
+            log_printf("\n[conn] AA=0x%08x int=%uus hop=%u -> events=%u hits=%u tx=%u\n",
+                    conn.aa, conn.interval_us, conn.hop, st.events, st.hits, st.tx_done);
+            log_printf("[conn] mtu=%u txoct=%u maxrsp=%u tx_timeouts=%u\n",
+                    st.mtu, st.tx_octets, st.maxrsp, st.tx_timeouts);
+            log_printf("[conn] notify_dropped=%u\n", nq_dropped);
+            continue;
+        }
+
+        if ((++adv_events & 127u) == 0)
+            log_printf("[adv] events=%u rx_ok=%u rx_err=%u\n", adv_events, ast.rx_ok, ast.rx_err);
+
+        time_delay_us(20000u + (rng_next() % 10000u));
+    }
+}

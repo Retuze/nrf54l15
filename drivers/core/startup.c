@@ -12,8 +12,8 @@
  */
 
 #include <stdint.h>
-#include <stdio.h>   /* printf：HardFault 现场打印 */
-#include "uart.h"    /* uart_tx_abort：打印前归零 TX 通道 */
+#include <stdio.h>    /* printf：HardFault 现场打印 */
+#include "console.h"  /* console_tx_abort：打印前归零 TX 通道 */
 
 /* Symbols provided by the linker script (link.ld)。
  * 链接器符号用法约定："有地址语义"的符号（_sidata/_sdata/...）按对象声明、
@@ -56,16 +56,31 @@ void DebugMon_Handler(void)   WEAK_ALIAS;
 void PendSV_Handler(void)     WEAK_ALIAS;
 void SysTick_Handler(void)    WEAK_ALIAS;
 
-/* All peripheral IRQs default to Default_Handler for now. Named handlers
- * (e.g. RADIO_0_IRQHandler) can be added later and will override these. */
+/* All peripheral IRQs default to Default_Handler. Named handlers (weak, alias
+ * to Default_Handler) let a driver take over a line just by defining a strong
+ * function of the same name (e.g. GRTC_2_IRQHandler in drivers/time/time.c). */
 void Default_IRQHandler(void) WEAK_ALIAS;
+
+/* nRF54L15 app 核 IRQn 最大到 269（GPIOTE30_1），所以表至少 16+270 项。
+ * 注意：旧版只留了 128 个 IRQ 槽——GRTC_2（228）这类高编号中断若被使能，
+ * 会去取表外的垃圾当向量，所以表必须够大，别改小。 */
+void GRTC_2_IRQHandler(void) WEAK_ALIAS;   /* GRTC_2_IRQn = 228（app secure） */
+
+/* UARTE 共享 SERIAL 线（本工程只用 UARTE；处理函数在 drivers/uart/uart.c） */
+void SERIAL20_IRQHandler(void) WEAK_ALIAS;  /* SERIAL20_IRQn = 198 */
+void SERIAL21_IRQHandler(void) WEAK_ALIAS;  /* SERIAL21_IRQn = 199 */
+void SERIAL22_IRQHandler(void) WEAK_ALIAS;  /* SERIAL22_IRQn = 200 */
+void SERIAL30_IRQHandler(void) WEAK_ALIAS;  /* SERIAL30_IRQn = 260 */
+
+/* 普通定时器（drivers/timer/timer.c） */
+void TIMER00_IRQHandler(void) WEAK_ALIAS;   /* TIMER00_IRQn = 85 */
 
 typedef void (*vector_t)(void);
 
-/* 16 core vectors + IRQ slots. 128 IRQ slots comfortably covers the
- * nRF54L15; unused slots simply point at Default_Handler. */
+/* 16 core vectors + IRQ slots. 270 IRQ slots covers the nRF54L15
+ * (IRQn max 269); unused slots simply point at Default_Handler. */
 __attribute__((section(".isr_vector"), used))
-const vector_t g_vectors[16 + 128] = {
+const vector_t g_vectors[16 + 270] = {
     (vector_t)(&_estack),   /* 0x00 Initial Stack Pointer */
     Reset_Handler,          /* 0x04 Reset                 */
     NMI_Handler,            /* 0x08 NMI                   */
@@ -81,8 +96,20 @@ const vector_t g_vectors[16 + 128] = {
     PendSV_Handler,         /* 0x38 PendSV                */
     SysTick_Handler,        /* 0x3C SysTick               */
 
-    /* IRQ0..IRQ127 -> Default_IRQHandler */
-    [16 ... 16 + 128 - 1] = Default_IRQHandler,
+    /* IRQ0..IRQ269 -> Default_IRQHandler。
+     * 具名外设 IRQ 用不相交区间挂槽（处理函数本体由对应驱动给强定义，
+     * 此处是弱别名占位）：槽号 = 16 + IRQn。 */
+    [16 ... 16 + 85 - 1]                 = Default_IRQHandler,
+    [16 + 85]                            = TIMER00_IRQHandler,
+    [16 + 86 ... 16 + 198 - 1]           = Default_IRQHandler,
+    [16 + 198]                           = SERIAL20_IRQHandler,
+    [16 + 199]                           = SERIAL21_IRQHandler,
+    [16 + 200]                           = SERIAL22_IRQHandler,
+    [16 + 201 ... 16 + 228 - 1]          = Default_IRQHandler,
+    [16 + 228]                           = GRTC_2_IRQHandler,
+    [16 + 229 ... 16 + 260 - 1]          = Default_IRQHandler,
+    [16 + 260]                           = SERIAL30_IRQHandler,
+    [16 + 261 ... 16 + 270 - 1]          = Default_IRQHandler,
 };
 
 void Reset_Handler(void)
@@ -134,13 +161,14 @@ void Reset_Handler(void)
  * Spin WITHOUT wfi so the debug AP stays powered and we can always re-attach.
  *
  * 现场打印：先 g_fault[] 记现场（零 libc/驱动依赖，pyocd 永远可读），再
- * uart_tx_abort() 中止可能在途的 EasyDMA 传输（STOP 不产生 END、空闲时是
- * 空操作，把 TX 通道确定性归零），然后走正常 printf（行缓冲，\n 触发
- * flush → write → uart_write 的"清 END→START→等 END"必然属于本次发送）。
- * 单线程无锁，uart_write 是同步忙等（将来中断驱动会新开 API，不影响本路径）。
+ * console_tx_abort() 中止可能在途的 EasyDMA 传输并丢 ring（把 TX 通道
+ * 确定性归零；console 未 init 时是空操作），然后走正常 printf（行缓冲，
+ * \n 触发 flush → write → uart_tx + uart_tx_wait——uart_tx_wait 自己踢
+ * DMA 不等 ISR，HardFault 上下文里同样能走完）。
  * 残余风险：fault 恰好发生在 vfprintf 内部时，bufio 静态状态被重入踩——
- * 输出乱码有界、不死锁，且 g_fault[] 已先行记录。uart_init() 之前的 fault
- * 会经 uart_write 的 ENABLE 守卫静默丢弃串口输出（现场仍靠 g_fault[]）。 */
+ * 输出乱码有界、不死锁，且 g_fault[] 已先行记录。uart_init/uart_console_bind
+ * 之前的 fault 会经 console 未初始化守卫静默丢弃串口输出
+ * （现场仍靠 g_fault[]）。 */
 volatile uint32_t g_fault[8];
 
 __attribute__((used)) void hardfault_c(uint32_t *frame)
@@ -151,7 +179,7 @@ __attribute__((used)) void hardfault_c(uint32_t *frame)
     g_fault[3] = frame[6];                          /* stacked PC */
     g_fault[4] = frame[5];                          /* stacked LR */
 
-    uart_tx_abort();
+    console_tx_abort();
     printf("\n!!! HARDFAULT  CFSR=0x%08x HFSR=0x%08x PC=0x%08x LR=0x%08x\n",
             g_fault[1], g_fault[2], g_fault[3], g_fault[4]);
     for (;;) {

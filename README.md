@@ -23,32 +23,49 @@ nrf54l15/
 │   ├── embedded.cmake       # embedded_app()：链接脚本/libc/hex/bin/size 一条龙
 │   └── targets/             # 芯片定义：nrf54l15.cmake（CPU/ABI + MDK 路由宏；
 │                            # 无 libc 路线）；换芯片 = 加一个 targets/<名字>.cmake
-├── boards/           # 板库：xiao_nrf54l15.h（板级硬件事实；换板 = config.h 换 include）
-├── common/           # 平台无关协议库（不 include 任何 54L 寄存器）
-│   └── bluetooth/gatt/      # ATT/GATT 服务端（纯协议，host 可单测）
+├── boards/           # 板库：xiao_nrf54l15.h（板级硬件事实；换板 = main.c 换 include）
+├── common/           # 平台无关协议库（不 include 任何 54L 寄存器，底层能力走注入）
+│   ├── bluetooth/           # gatt/：ATT/GATT 服务端（纯协议，host 可单测）
+│   │                       # ll/：BLE 链路层（广播/CONNECT_IND/CSA#1/LL control/
+│   │                       #      连接状态机；全部经 ll_ops_t 注入，host 可单测）
+│   ├── ring/                # SPSC 字节环形缓冲（ISR put / 主循环 get，无锁）
+│   ├── log/                 # 实时日志：格式化 + log_sink 注入（目标机=uart 异步
+│   │                        #   TX，宿主测试=fake；不改 printf 阻塞路径）
+│   ├── cobs/                # COBS 帧定界（UART 传输层，无长度上限，增量解码）
+│   └── proto/               # 固件/app 应用协议：帧/TLV/分片/CRC16 + 两级 REPORT
+│                            #   送达 + SET 幂等重传（规格见 docs/proto.md）
 ├── drivers/          # nRF54L15 芯片驱动（全部编成一个 libdrivers.a）
-│   ├── core/                # 共用 startup.c（向量表+启动序列）与 nrf54l15.ld
-│   │                        # （RRAM/RAM 布局 + TLS 块 + 堆符号）；syscalls.c：
-│   │                        #   POSIX 系统调用落点（强 write → uart_write，
-│   │                        #   其余无后端操作弱桩 -1，应用可强定义覆盖）
-│   ├── grtc/                # 52 位全局实时计数器（时间基/延时）
-│   └── uart/                # UARTE20 TX 芯片驱动（纯 uart_init/uart_write；
-│                            #   接线走实验 config.h）
+│   ├── core/                # 共用 startup.c（向量表 16+270 项 + 启动序列）与
+│   │                        # nrf54l15.ld（RRAM/RAM 布局 + TLS 块 + 堆符号）；
+│   │                        # syscalls.c：POSIX 系统调用弱桩（强 write 在
+│   │                        #   drivers/console，应用可强定义覆盖）
+│   ├── gpio/                # Arduino 风格：GPIO_PIN(port,pin) 线性编号 + mode/write/read
+│   ├── time/                # BLE 专用时基（GRTC 实现）：now_us/delay_us + CC 闹钟（IRQ）
+│   ├── timer/               # 普通定时器（TIMER00 多实例）：周期/单次回调，1MHz 节拍
+│   ├── uart/                # UARTE 实例式驱动（uart_init(port,cfg) 不透明句柄；
+│   │                        #   uart_tx 入队即返 + uart_tx_wait 主动排空——阻塞是
+│   │                        #   console 层的组合；RX DMA 按满/空闲成块投递）
+│   └── console/             # stdio 落点 + 默认 log sink（printf 仅 HardFault 用）
+│   ├── radio/               # RADIO 寄存器驱动 + T_IFS 软件时序封装（LEAD 校准在驱动内）
+│   └── clock/               # clock_hfxo_start()
 ├── project/          # 实验工程目录，每个实验一个子目录
 │   └── 01_conn/             # 实验 01：BLE 连接 + ATT/GATT（当前）
-│       ├── main.c  config.h  CMakeLists.txt
+│       ├── main.c  CMakeLists.txt     # main 只做驱动 init + ll_ops 接线 + 打印
 │       # startup.c/link.ld 默认共用 drivers/core/ 的共享版；实验要自定义
 │       # 就把同名文件放进本目录，embedded_app 自动优先用工程自己的版本
+├── tests/            # 宿主侧单测（host 编译，不进交叉工具链）：自研 tf.h + 注入测试
+│                     # gatt_test.c（字节级）+ ll_test.c（fake time/radio 剧本）
 ├── docs/             # picolibc.md：自建工具链库的选项与踩坑记录
-├── scripts/          # build.sh / check.sh / flash.sh / build_toolchain_libs.sh
+├── scripts/          # build.sh / check.sh / flash.sh / run_tests.sh / build_toolchain_libs.sh
 │                     # + python 分析工具（serial_log 等）+ picolibc-arm-cross.txt
 └── vendor/           # Nordic MDK + CMSIS 头（寄存器视图）+ 自建工具链库
     ├── picolibc/arm-none-eabi/      # libc.a/libm.a + 头（自建，1.8.12）
     └── compiler-rt/arm-none-eabi/   # libclang_rt.builtins-armhf.a（自建）
 ```
 
-约定：`common` 放与芯片无关的；`drivers` 放芯片驱动（单库，startup/链接脚本也在这共用）；
-每个实验在 `project/` 下只有 `main.c` + `config.h` + `CMakeLists.txt`，
+约定：`common` 放与芯片无关的纯协议（底层能力经 ops 结构体注入，宿主可单测）；
+`drivers` 放芯片驱动（单库，startup/链接脚本也在这共用）；
+每个实验在 `project/` 下只有 `main.c` + `CMakeLists.txt`（板头直接 include），
 复制目录改个名就是新实验（`cp -r project/01_conn project/02_xxx`）。
 startup.c / link.ld 默认共用 `drivers/core/`；实验要自定义（比如改栈大小、改内存布局），
 把同名文件放进实验目录即可，`embedded_app()` 自动优先用工程自己的版本。
@@ -57,7 +74,9 @@ startup.c / link.ld 默认共用 `drivers/core/`；实验要自定义（比如�
 
 ```sh
 ./scripts/build.sh 01_conn   # 产物在 build/01_conn/01_conn.elf/.hex/.bin
-./scripts/check.sh 01_conn   # 构建 + 回归断言（向量表/符号契约/内存范围），改框架后跑它
+./scripts/run_tests.sh       # 宿主侧单测（common 的 gatt/ll/ring/log 注入测试）
+./scripts/coverage.sh        # common 行覆盖率报告（默认门槛 80%，build/coverage/）
+./scripts/check.sh           # 全量回归：全部实验 + 宿主单测 + 覆盖率门槛
 ./scripts/flash.sh 01_conn   # pyOCD -t nrf54l（板载 CMSIS-DAP）
 ```
 
@@ -103,15 +122,22 @@ BLE 侧日志：`python3 scripts/serial_log.py`（串口日志），`scripts/sca
 | 实验 | 主题 | 状态 |
 |---|---|---|
 | 01_conn | BLE 连接（广告 → CONNECT_IND → 数据信道 SN/NESN + DLE + LL 过程）+ ATT/GATT 服务 | 代码就绪 · **待实板验证** |
-| 02_fault | HardFault 现场打印验证：故意触发总线错误 → g_fault[] + uart_tx_abort() 归零 TX → printf 现场行（预期 CFSR=0x00008200、HFSR=0x40000000） | 代码就绪 · **待实板验证** |
-| （待拆） | 01_blink / 02_adv / 03_rx / 04_conn … 按 nrf52840 系列拆阶段 | 计划 |
-| （待做） | tests/：gatt 纯协议 host 单测（对照 nrf52840 的 tests/run.sh） | 计划 |
+| 02_fault | HardFault 现场打印验证：故意触发总线错误 → g_fault[] + console_tx_abort() 归零 TX → printf 现场行（预期 CFSR=0x00008200、HFSR=0x40000000） | 代码就绪 · **待实板验证** |
+| 03_conn_log | 连接态实时日志（方案 A）：common/log + uart_tx + ll on_conn_event 钩子，逐事件 "evt=N ok/miss ch=X"（全工程 printf 仅 HardFault） | 代码就绪 · **待实板验证** |
+| 04_async_ll | 事件化 LL（方案 B，计划）：time_alarm 定锚 + RADIO IRQ 收发，连接态进 IRQ/调度，主循环解放 | 计划 |
+| 07_adv_scan | LE 双角色第一步（计划）：广播 + 扫描交替——事件队列调度器雏形 + scan_sm 被动扫描，验证碰撞让步 | 计划 |
+| 08_central_conn | central 侧连接（计划）：扫描 → 收 ADV → 发 CONNECT_IND → 主机 anchor 时序 + WinOffset 相位避碰 | 计划 |
+| 09_multi_role | 多连接/多角色完整调度（计划）：参数避碰 + 优先级让步 + 多 conn 实例 | 计划 |
+| 05_proto | 应用协议固件接线：gatt 0xFFF1 写回调+通知队列 + proto 挂载，GET→全量 REPORT(ACK_REQ 超时重发)/SET{TIME}/ACK（fw 侧完整语义） | 代码就绪 · **待实板验证** |
+| 06_timer | 普通定时器（TIMER00 多实例）：1s 周期回调闪灯 + 3s 单次回调，主循环自由——GRTC 是 BLE 专用时基，应用定时不占它 | 代码就绪 · **待实板验证** |
 | （待做） | tools/：SVD → 寄存器头生成（gen_soc.py 迁移）、vendor/ 裁剪到只用到的芯片头 | 计划 |
 | （待做） | FLPR（RISC-V）核实验 | 计划 |
 
-链路层当前整体在 `project/01_conn/main.c`（广告/连接/CSA#1/LL 控制过程），后续拆分层：
-`common/bluetooth/ll/`（纯协议）+ `drivers/radio/`（RADIO 硬件接入），对照 nrf52840 仓库的
-`ll_pdu.c/ll_chan.c/ll_ww.c/ll_conn.c` + `ll_backend.c` 那套分层。
+分层现状（2026-08-30 重构后）：链路层在 `common/bluetooth/ll/`（纯协议，全部底层能力经
+`ll_ops_t` 注入，`tests/ll_test.c` 用 fake time/radio 剧本做宿主单测，144 项断言全绿）；
+RADIO 寄存器 + T_IFS 软件时序在 `drivers/radio/`；`project/01_conn/main.c` 只剩驱动
+初始化、`ll_ops` 接线和日志打印（~150 行）。对照 nrf52840 仓库的 ll_pdu/ll_chan/ll_ww/
+ll_conn 拆分（ll.c 内按函数分区，将来按需拆文件）。
 
 ## 启动流程（drivers/core/startup.c，纯 C，各实验共用）
 
@@ -134,10 +160,13 @@ HardFault 诊断：`startup.c` 里 `g_fault[]` 记录 magic/CFSR/HFSR/PC/LR（py
   `-Dio-long-long=true` 等选项见 docs/picolibc.md），libgcc 换成自建 compiler-rt
   builtins。产物 commit 进 vendor/，clone 即开箱即用；升级工具链后用
   `scripts/build_toolchain_libs.sh` 重建。
-- **printf 统一**：picolibc 的 printf（`-Dposix-console=true`：库自带 fd 0/1/2 的
-  带缓冲 FILE，行缓冲换行即 flush，`write(1)` 由 drivers/uart 的强 `write` 落地；
-  支持 %llu/浮点）。原 tiny uprintf 已删（main.c 全部换 printf）；HardFault 现场
-  打印也用 printf——单线程无锁、重入最坏覆盖半行旧输出，可接受（见 startup.c 注释）。
+- **打印策略（2026-08-30 起）**：printf 只归 HardFault 现场打印（startup.c
+  hardfault_c，阻塞路径保证现场行确定性落地）；日常日志统一走 common/log
+  （格式化 + log_sink 注入，目标机 sink = uart_tx 入队即返、驱动内 512B ring
+  + TX END 中断后台排空，微秒级返回不阻塞连接时序；满则丢弃、log_dropped
+  可观测）。装配：`console_log_init()`（console_init 之后调一次）。printf 的
+  stdio 链路（posix-console：库内弱 stdout 512B 行缓冲 → write(1) → console.c
+  强 write = uart_tx + uart_tx_wait）保留，专供 HardFault 路径。
 - **MDK 路由宏**：`vendor/mdk/nrf.h` 靠 `-DNRF54L15_XXAA -DNRF_APPLICATION` 选到
   54L 应用核的头，放在 targets 文件的 `EMBED_CPU_DEFINES`。
 - **vendor/mdk 全量保留**：MDK 含全部 nRF 芯片头（~95M），当前只用到 54L；
