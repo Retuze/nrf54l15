@@ -743,6 +743,57 @@ static void test_chm_zero_rollback(void)
     CHECK_EQ(chan_rec[4], 25u);
 }
 
+/* ------------------------------------------ instant 已过仍应用 -- */
+/* IND 因重传晚到、收到时 counter 已越过 instant：严格 == 会永远不切换
+ * （central 已按新参数走,我们聋死到监督超时——实板 Android 复现）。
+ * 回绕安全判定下晚一拍也要应用。 */
+static void test_chm_late_instant(void)
+{
+    ll_conn_t conn = mk_conn();
+    ll_stats_t st;
+    fake_reset();
+    static const uint8_t new_chm[7] = { 0x01, 0, 0, 0, 0, 1, 0 };  /* 只剩 ch0, instant=1 */
+    ev_pkt(100, mk_empty(0, 0, 0), 2, 1);
+    /* 事件 1 收到 IND——本事件的 instant 检查已经跑过,只能晚应用 */
+    ev_pkt(100, mk_ctrl(1, 1, 1, 0x01u, new_chm, 7), 10, 1);
+    ev_pkt(100, mk_empty(2, 0, 0), 2, 1);
+    ev_pkt(100, mk_empty(3, 1, 1), 2, 1);
+    static const uint8_t term_pl[] = { 0x00 };
+    ev_pkt(100, mk_ctrl(4, 0, 0, 0x02u, term_pl, 1), 3, 1);
+
+    ll_conn_run(&ops, &conn, 3000, &st);
+
+    /* hop=5：事件 0/1 走 5,10；事件 2 起应用新图 → 全部重映射到 0 */
+    CHECK_EQ(chan_rec[0], 5u);
+    CHECK_EQ(chan_rec[1], 10u);
+    CHECK_EQ(chan_rec[2], 0u);
+    CHECK_EQ(chan_rec[3], 0u);
+    CHECK_EQ(conn.num_used, 1u);
+    CHECK_EQ(st.hits, 5u);
+}
+
+static void test_upd_late_instant(void)
+{
+    ll_conn_t conn = mk_conn();
+    ll_stats_t st;
+    fake_reset();
+    /* WinSize=8 WinOffset=0 Interval=40 Timeout=200 Instant=1（收到时已过） */
+    static const uint8_t upd_pl[11] = { 8, 0, 0, 40, 0, 0, 0, 200, 0, 1, 0 };
+    ev_pkt(100, mk_empty(0, 0, 0), 2, 1);
+    ev_pkt(100, mk_ctrl(1, 1, 1, 0x00u, upd_pl, 11), 14, 1);
+    ev_pkt(100, mk_empty(2, 0, 0), 2, 1);
+    ev_pkt(100, mk_empty(3, 1, 1), 2, 1);
+    static const uint8_t term_pl[] = { 0x00 };
+    ev_pkt(100, mk_ctrl(4, 0, 0, 0x02u, term_pl, 1), 3, 1);
+
+    ll_conn_run(&ops, &conn, 3000, &st);
+
+    CHECK_EQ(conn.interval_us, 50000u);      /* 晚一拍仍采纳新参数 */
+    CHECK_EQ(conn.timeout_us, 2000000u);
+    CHECK_EQ(st.events, 5u);
+    CHECK_EQ(st.hits, 5u);
+}
+
 /* ------------------------------------------ 重传去重 + 响应重发 -- */
 /* 重传的 ATT 请求（SN 未变）不得重复进 ATT 层；我们未被确认的响应必须
  * 原样重发（同 SN 同载荷）——正是实板上 GET 风暴 bug 的回归用例。 */
@@ -806,6 +857,8 @@ int main(void)
     test_crc_bad_no_reply();
     test_short_ctrl_unknown_rsp();
     test_retransmission();
+    test_chm_late_instant();
+    test_upd_late_instant();
     test_chm_zero_rollback();
     test_bad_connind_rejected();
     TF_END();

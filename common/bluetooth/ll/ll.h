@@ -38,11 +38,15 @@ typedef struct {
     uint32_t mtu, tx_octets;       /* 断开时经注入 getter 摘取 */
     uint32_t rxpdu_n;
     uint8_t  rxpdu[6][32];         /* 最近的 LL control / 非空 PDU 环形缓冲 */
+    uint8_t  txhdr[6];             /* 对应事件我们回复的头字节（SN/NESN 对账） */
+    uint16_t rxevt[6];             /* 对应事件的 connEventCounter */
 } ll_stats_t;
 
 /* 广播统计（跨 sweep 累计；adv 间隔与打印留 main 循环） */
 typedef struct {
     uint32_t rx_ok, rx_err;
+    uint32_t scan_req;             /* 定向到我们的 SCAN_REQ */
+    uint32_t scan_rsp;             /* SCAN_RSP 按时发出（radio_reply_at 成功） */
 } ll_adv_stats_t;
 
 typedef struct ll_ops {

@@ -41,4 +41,9 @@ int radio_reply_at(const uint8_t *pkt, uint32_t len, uint64_t rx_end_us);
 /* 关 radio（清 SHORTS → TASKS_DISABLE → 等 DISABLED）。 */
 void radio_disable(void);
 
+/* TIFS 软件定时诊断：late = busy-wait 退出迟到量 min/max（µs），
+ * ramp = TXEN→EVENTS_READY 实测 min/max（µs）。读取后复位。 */
+void radio_dbg_tifs(uint32_t *late_min, uint32_t *late_max,
+                    uint32_t *ramp_min, uint32_t *ramp_max);
+
 #endif /* RADIO_H */

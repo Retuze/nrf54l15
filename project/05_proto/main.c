@@ -231,6 +231,13 @@ static void on_conn_event_cb(uint32_t counter, int crc_ok, uint32_t ch)
     }
 }
 
+/* 连接建立提示（连接期日志走异步 log，不阻塞时序） */
+static void on_connect_log(void)
+{
+    gatt_on_connect();
+    log_puts("[conn] connected\n");
+}
+
 static const ll_ops_t OPS = {
     .now_us   = time_now_us,
     .delay_us = time_delay_us,
@@ -242,7 +249,7 @@ static const ll_ops_t OPS = {
     .radio_reply_at    = radio_reply_at,
     .att_handle = gatt_handle_att,
     .on_dle     = gatt_set_tx_octets,
-    .on_connect = gatt_on_connect,
+    .on_connect = on_connect_log,
     .mtu_get    = gatt_dbg_mtu,
     .txoct_get  = gatt_dbg_txoct,
     .led        = led_set,
@@ -285,6 +292,12 @@ int main(void)
                (unsigned long long)time_now_us(), smoke);
     free(smoke);
 
+    {   /* GRTC 读取耗时标定（TIFS busy-wait 的粒度 = 单次读耗时） */
+        uint64_t a = time_now_us();
+        for (volatile int i = 0; i < 1000; i++) { (void)time_now_us(); }
+        log_printf("grtc read x1000: %u us\n", (uint32_t)(time_now_us() - a));
+    }
+
     rng_state = (uint32_t)time_now_us() | 1u;
     log_puts("\n=== 54L-GATT + app proto (GET/REPORT/SET/ACK) ===\n");
 
@@ -307,11 +320,32 @@ int main(void)
             log_printf("[conn] mtu=%u txoct=%u maxrsp=%u tx_timeouts=%u\n",
                     st.mtu, st.tx_octets, st.maxrsp, st.tx_timeouts);
             log_printf("[conn] notify_dropped=%u\n", nq_dropped);
+            {
+                uint32_t lmin, lmax, rmin, rmax;
+                radio_dbg_tifs(&lmin, &lmax, &rmin, &rmax);
+                log_printf("[conn] tifs_late=%u..%u ramp=%u..%u us\n",
+                           lmin, lmax, rmin, rmax);
+            }
+            {   /* 断链后验尸：最后 6 个有内容 PDU（LL 控制/非空数据） */
+                uint32_t cnt = st.rxpdu_n < 6u ? st.rxpdu_n : 6u;
+                uint32_t base = st.rxpdu_n - cnt;
+                for (uint32_t j = 0; j < cnt; j++) {
+                    uint32_t slot = (base + j) % 6u;
+                    uint32_t llid = st.rxpdu[slot][0] & 0x3u;
+                    uint32_t len = st.rxpdu[slot][1];
+                    log_printf("  rx[-%u] evt=%u LLID=%u len=%u:", cnt - j,
+                               st.rxevt[slot], llid, len);
+                    for (uint32_t k = 0; k < len + 2u && k < 32u; k++)
+                        log_printf(" %02x", st.rxpdu[slot][k]);
+                    log_printf(" | tx=%02x\n", st.txhdr[slot]);
+                }
+            }
             continue;
         }
 
         if ((++adv_events & 127u) == 0)
-            log_printf("[adv] events=%u rx_ok=%u rx_err=%u\n", adv_events, ast.rx_ok, ast.rx_err);
+            log_printf("[adv] events=%u rx_ok=%u rx_err=%u sreq=%u srsp=%u\n",
+                       adv_events, ast.rx_ok, ast.rx_err, ast.scan_req, ast.scan_rsp);
 
         time_delay_us(20000u + (rng_next() % 10000u));
     }

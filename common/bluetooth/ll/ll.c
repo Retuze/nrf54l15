@@ -392,6 +392,8 @@ static int conn_event(const ll_ops_t *ops, uint32_t ch, uint32_t window_us,
         uint32_t n = 2u + rx_buf[1];
         if (n > 32u) n = 32u;
         for (uint32_t i = 0; i < n; i++) st->rxpdu[slot][i] = rx_buf[i];
+        st->txhdr[slot] = tx_buf[0];             /* 我们同事件的回复头 */
+        st->rxevt[slot] = (uint16_t)g_conn_evt;
         st->rxpdu_n++;
     }
 
@@ -437,7 +439,10 @@ static int adv_and_listen(const ll_ops_t *ops, uint32_t n, ll_conn_t *conn,
         } else if (directed && type == PDU_TYPE_SCAN_REQ) {
             /* Answer the scan request with a SCAN_RSP, T_IFS later (software
              * timed — nRF54L has no hardware TIFS turnaround). */
-            ops->radio_reply_at(scan_rsp_pdu, (uint32_t)scan_rsp_pdu[1] + 2u, t_end);
+            ast->scan_req++;
+            if (ops->radio_reply_at(scan_rsp_pdu, (uint32_t)scan_rsp_pdu[1] + 2u, t_end)) {
+                ast->scan_rsp++;
+            }
         }
     } else if (got) {
         ast->rx_err++;
@@ -487,9 +492,13 @@ void ll_conn_run(const ll_ops_t *ops, ll_conn_t *conn,
     if (max_misses < 6u) max_misses = 6u;
 
     for (;;) {
-        /* Apply a pending update exactly at its Instant (before this event). */
+        /* Apply a pending update at its Instant (before this event). 用 16 位
+         * 回绕安全的 "已到达/已越过" 判定而非 ==：链路恶化时 IND 可能重传
+         * 多次才被收到，instant 已过——严格相等会永远不切换（central 已按
+         * 新参数跳频，我们从此全 miss 直到监督超时,实板 Android 复现）。
+         * 晚应用只损失中间几个事件,随后重新同步。 */
         at_instant = 0;
-        if (g_chm_pending && counter == g_chm_instant) {
+        if (g_chm_pending && (uint16_t)(counter - g_chm_instant) < 32768u) {
             /* 非法 ChM（0 个信道会让 CSA#1 重映射模零）：回滚保留旧表 */
             uint8_t old_chm[5], old_num = conn->num_used, old_used[37];
             for (int i = 0; i < 5; i++) old_chm[i] = conn->chmap[i];
@@ -505,8 +514,13 @@ void ll_conn_run(const ll_ops_t *ops, ll_conn_t *conn,
             }
             g_chm_pending = 0;
         }
-        if (g_upd_pending && counter == g_upd_instant) {
-            anchor += g_upd_winoffset_us;          /* new transmit-window offset */
+        if (g_upd_pending && (uint16_t)(counter - g_upd_instant) < 32768u) {
+            /* 晚 late 个事件应用：instant 点之后 central 已按新 interval 走了
+             * late 个周期,而我们的 anchor 是按旧 interval 推的——补上差值。 */
+            uint16_t late = (uint16_t)(counter - g_upd_instant);
+            int64_t drift = (int64_t)g_upd_interval_us - (int64_t)conn->interval_us;
+            anchor = (uint64_t)((int64_t)anchor + (int64_t)g_upd_winoffset_us +
+                                (int64_t)late * drift);
             conn->interval_us = g_upd_interval_us;
             conn->winsize_us  = g_upd_winsize_us;
             conn->timeout_us  = g_upd_timeout_us;

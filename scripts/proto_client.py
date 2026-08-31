@@ -180,7 +180,8 @@ async def main() -> None:
                 check(abs(drift) <= 3, f"TIME synced (drift={drift}s, tz={tz}min)")
             if 4 in tlvs:
                 up = struct.unpack(">I", tlvs[4])[0]
-                check(up < 3600, f"UPTIME sane ({up}s)")
+                # GRTC 不随软复位清零，uptime 是自上电以来的累计
+                check(up < 30 * 86400, f"UPTIME sane ({up}s)")
             await client.write_gatt_char(
                 CHAR_FFF1, frame(TYPE_ACK, app_id, struct.pack(">BB", 0, rep_id)), response=True)
 

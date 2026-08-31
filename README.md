@@ -122,6 +122,15 @@ BLE 侧日志：`python3 scripts/serial_log.py`（串口日志），`scripts/sca
 `pyocd cmd -t nrf54l -c reset` 解开；同一地址换 GATT 表后 bleak 可能因系统
 GATT 缓存报 services=0 或找不到特征，重试/重启蓝牙即可。
 
+**T_IFS 软件时序的校准与对端宽容度**（2026-08-31 实板结论）：空口回复时刻 =
+`rx_end + LEAD + busy-wait 退出滞后(2..6us) + TXEN ramp(实测 43..45us)`，
+`radio_dbg_tifs()` 可读 late/ramp 实测。各对端接收窗口宽容度差异巨大：
+PC(Realtek) 早/晚几十 us 都收；iOS 中等；**安卓最严——空口 ~146us 能收、
+~150+us 即拒收，且 SCAN_RSP 收不到就不上报设备（表现为"扫不到"）**。
+LEAD=98 即安卓可收；busy-wait 与 TASKS_TXEN 之间不能插任何代码（一次
+GRTC 读 ≈2-3us 就能把响应推出安卓窗口）。构建超时的回复宁可放弃也不晚发
+（TURNAROUND_SLACK_US=5）：响应已在 LL 的 pend 队列，对端重传时下事件秒回。
+
 ## 实验路线图
 
 | 实验 | 主题 | 状态 |
