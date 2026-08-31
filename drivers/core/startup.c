@@ -75,6 +75,9 @@ void SERIAL30_IRQHandler(void) WEAK_ALIAS;  /* SERIAL30_IRQn = 260 */
 /* 普通定时器（drivers/timer/timer.c） */
 void TIMER00_IRQHandler(void) WEAK_ALIAS;   /* TIMER00_IRQn = 85 */
 
+/* RADIO（drivers/radio/radio.c 异步 API） */
+void RADIO_0_IRQHandler(void) WEAK_ALIAS;   /* RADIO_0_IRQn = 138 */
+
 typedef void (*vector_t)(void);
 
 /* 16 core vectors + IRQ slots. 270 IRQ slots covers the nRF54L15
@@ -101,7 +104,9 @@ const vector_t g_vectors[16 + 270] = {
      * 此处是弱别名占位）：槽号 = 16 + IRQn。 */
     [16 ... 16 + 85 - 1]                 = Default_IRQHandler,
     [16 + 85]                            = TIMER00_IRQHandler,
-    [16 + 86 ... 16 + 198 - 1]           = Default_IRQHandler,
+    [16 + 86 ... 16 + 138 - 1]           = Default_IRQHandler,
+    [16 + 138]                           = RADIO_0_IRQHandler,
+    [16 + 139 ... 16 + 198 - 1]          = Default_IRQHandler,
     [16 + 198]                           = SERIAL20_IRQHandler,
     [16 + 199]                           = SERIAL21_IRQHandler,
     [16 + 200]                           = SERIAL22_IRQHandler,

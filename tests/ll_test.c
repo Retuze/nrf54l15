@@ -820,6 +820,155 @@ static void test_retransmission(void)
     CHECK_EQ((tx_log[2][0] >> 3) & 1u, 1u);  /* SN 已推进 */
 }
 
+/* ==================================================== 异步引擎 ==== */
+/* fake 闹钟/异步 radio + 事件泵：把同一套 ev[] 剧本喂给事件化引擎，
+ * 断言其收发行为与同步引擎一致（协议逻辑共享，引擎壳独立验证）。 */
+static struct { int armed; uint64_t t; void (*cb)(uint32_t); } fk_alarm[2];
+static uint8_t *fk_rx_buf;
+static int fk_rx_armed, fk_tx_pending, async_done;
+
+static void fake_alarm_set(uint32_t ch, uint64_t t, void (*cb)(uint32_t))
+{
+    fk_alarm[ch].armed = 1; fk_alarm[ch].t = t; fk_alarm[ch].cb = cb;
+}
+static void fake_alarm_cancel(uint32_t ch) { fk_alarm[ch].armed = 0; }
+static void fake_rx_arm(uint8_t *buf, uint32_t maxlen)
+{
+    (void)maxlen;
+    fk_rx_buf = buf; fk_rx_armed = 1;
+}
+static int fake_reply_arm(const uint8_t *pkt, uint32_t len, uint64_t rx_end)
+{
+    record_tx(pkt, len);
+    fake_now = rx_end + 230u;
+    fk_tx_pending = 1;
+    return 1;
+}
+static void async_disc_cb(void) { async_done = 1; }
+
+/* 事件泵：锚点闹钟 → rx_arm → 剧本给包（RX 回调 + TX 完成）或窗口超时。 */
+static void async_pump(void)
+{
+    for (uint32_t guard = 0; !async_done && guard < 256u; guard++) {
+        if (!fk_alarm[0].armed) { TF_FAIL("anchor alarm not armed"); return; }
+        fk_alarm[0].armed = 0;
+        fake_now = fk_alarm[0].t;
+        fk_alarm[0].cb(0);
+        if (async_done) return;
+        if (!fk_rx_armed) { TF_FAIL("rx not armed"); return; }
+        fk_rx_armed = 0;
+        if (script_idx >= nev) { TF_FAIL("async script exhausted"); return; }
+        const rx_event_t *e = &ev[script_idx++];
+        if (e->pkt == NULL) {
+            if (!fk_alarm[1].armed) { TF_FAIL("window alarm not armed"); return; }
+            fk_alarm[1].armed = 0;
+            fake_now = fk_alarm[1].t;
+            fk_alarm[1].cb(1);
+        } else {
+            fake_now += e->t_off;
+            for (uint32_t i = 0; i < e->len; i++) fk_rx_buf[i] = e->pkt[i];
+            uint64_t ta = fake_now;
+            ll_async_on_radio_rx(ta, ta + (uint64_t)e->len * 8u, e->crc_ok);
+            if (fk_tx_pending) {
+                fk_tx_pending = 0;
+                ll_async_on_radio_tx();
+            }
+        }
+    }
+    if (!async_done) TF_FAIL("async engine never finished");
+}
+
+static ll_stats_t as_st;
+
+static void async_begin(ll_conn_t *conn)
+{
+    ops.alarm_set = fake_alarm_set;
+    ops.alarm_cancel = fake_alarm_cancel;
+    ops.radio_rx_arm = fake_rx_arm;
+    ops.radio_reply_arm = fake_reply_arm;
+    fk_alarm[0].armed = fk_alarm[1].armed = 0;
+    fk_rx_armed = 0; fk_tx_pending = 0; async_done = 0;
+    ll_async_start(&ops, conn, 3000, &as_st, async_disc_cb);
+}
+
+static void async_end(void)
+{
+    ops.alarm_set = 0; ops.alarm_cancel = 0;
+    ops.radio_rx_arm = 0; ops.radio_reply_arm = 0;
+}
+
+/* 同 test_sn_nesn 的剧本走异步引擎：回复头序列必须一致 */
+static void test_async_sn_nesn(void)
+{
+    ll_conn_t conn = mk_conn();
+    fake_reset();
+    ev_pkt(100, mk_empty(0, 0, 0), 2, 1);
+    ev_pkt(100, mk_empty(1, 0, 0), 2, 1);       /* 重传 */
+    ev_pkt(100, mk_empty(2, 1, 1), 2, 1);
+    static const uint8_t term_pl[] = { 0x00 };
+    ev_pkt(100, mk_ctrl(3, 0, 0, 0x02u, term_pl, 1), 3, 1);
+
+    async_begin(&conn);
+    async_pump();
+    async_end();
+
+    CHECK_EQ(tx_log[0][0], 0x05u);
+    CHECK_EQ(tx_log[1][0], 0x05u);
+    CHECK_EQ(tx_log[2][0], 0x09u);
+    CHECK_EQ(tx_log[3][0], 0x05u);
+    CHECK_EQ(as_st.events, 4u);
+    CHECK_EQ(as_st.hits, 4u);
+    CHECK_EQ(as_st.tx_done, 4u);
+    CHECK_EQ(n_connect, 1u);                    /* conn_begin 走了 on_connect */
+    CHECK_EQ(chan_rec[0], 5u);                  /* CSA#1 与同步引擎同源 */
+}
+
+/* miss（窗口超时）与恢复：异步引擎的 miss 路径 + 监督超时断链 */
+static void test_async_miss_timeout(void)
+{
+    ll_conn_t conn = mk_conn();
+    conn.timeout_us = 6u * 30000u;              /* max_misses = 6 */
+    fake_reset();
+    ev_pkt(100, mk_empty(0, 0, 0), 2, 1);       /* 1 hit */
+    for (uint32_t i = 0; i < 6; i++) {
+        ev_miss(100);                           /* 连续 6 miss → 超时 */
+    }
+
+    async_begin(&conn);
+    async_pump();
+    async_end();
+
+    CHECK_EQ(as_st.events, 7u);
+    CHECK_EQ(as_st.hits, 1u);
+    CHECK_EQ(as_st.tx_done, 1u);
+    CHECK(n_disable > 0);
+    CHECK_EQ(n_led, 2u);                        /* 首 hit 亮 + 断链灭 */
+    CHECK_EQ(led_states[1], 0u);
+}
+
+/* ATT 透传 + 重传去重在异步引擎下同样成立 */
+static void test_async_att(void)
+{
+    ll_conn_t conn = mk_conn();
+    fake_reset();
+    static const uint8_t att_req[] = { 0x0A, 0x03, 0x00 };
+    ev_pkt(100, mk_att(0, 0, 0, att_req, 3), 9, 1);
+    ev_pkt(100, mk_att(1, 0, 0, att_req, 3), 9, 1);   /* 重传 → 原样重发 */
+    static const uint8_t term_pl[] = { 0x00 };
+    ev_pkt(100, mk_ctrl(2, 1, 1, 0x02u, term_pl, 1), 3, 1);
+
+    async_begin(&conn);
+    async_pump();
+    async_end();
+
+    CHECK_EQ(n_att, 1u);                        /* 重传不重复进 ATT */
+    CHECK_EQ(tx_log[0][0] & 3u, 2u);
+    CHECK_EQ(tx_log[1][0] & 3u, 2u);            /* 原样重发 */
+    CHECK_EQ(tx_log[0][6], 0x0Bu);
+    CHECK_EQ(as_st.hits, 3u);
+    CHECK_EQ(as_st.maxrsp, 9u);
+}
+
 /* ------------------------------------------------ 非法 CONNECT_IND 拒绝 -- */
 static void test_bad_connind_rejected(void)
 {
@@ -861,5 +1010,8 @@ int main(void)
     test_upd_late_instant();
     test_chm_zero_rollback();
     test_bad_connind_rejected();
+    test_async_sn_nesn();
+    test_async_miss_timeout();
+    test_async_att();
     TF_END();
 }

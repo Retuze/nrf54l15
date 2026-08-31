@@ -464,9 +464,9 @@ int ll_adv_sweep(const ll_ops_t *ops, ll_conn_t *conn,
 }
 
 /* ================================================== CONNECTION ======= */
-/* Returns after the connection ends (supervision-style timeout on misses). */
-void ll_conn_run(const ll_ops_t *ops, ll_conn_t *conn,
-                 uint64_t t_ci_end, ll_stats_t *st)
+
+/* 连接开始的公共复位（同步/异步引擎共用）。 */
+static void conn_begin(const ll_ops_t *ops, const ll_conn_t *conn, ll_stats_t *st)
 {
     ops->radio_set_aa(conn->aa, conn->crcinit);
     conn_sn = 0; conn_nesn = 0;
@@ -478,13 +478,91 @@ void ll_conn_run(const ll_ops_t *ops, ll_conn_t *conn,
     if (ops->on_connect) {
         ops->on_connect();          /* reset ATT MTU / data-length state */
     }
-
     *st = (ll_stats_t){0};
+}
+
+/* 事件前处理（同步/异步引擎共用）：在 Instant 应用 pending 的 chm/update
+ * （16 位回绕安全的"已到/已过"判定，理由见调用点注释），选信道，算监听
+ * 窗口。misses/max_misses/anchor 原位更新。返回本事件信道号。 */
+static uint32_t conn_event_setup(ll_conn_t *conn, uint64_t *anchor,
+                                 uint16_t counter, uint32_t events,
+                                 uint32_t *misses, uint32_t *max_misses,
+                                 uint32_t *pre_out, uint32_t *win_out)
+{
+    int at_instant = 0;
+    if (g_chm_pending && (uint16_t)(counter - g_chm_instant) < 32768u) {
+        /* 非法 ChM（0 个信道会让 CSA#1 重映射模零）：回滚保留旧表 */
+        uint8_t old_chm[5], old_num = conn->num_used, old_used[37];
+        for (int i = 0; i < 5; i++) old_chm[i] = conn->chmap[i];
+        for (uint32_t i = 0; i < old_num; i++) old_used[i] = conn->used[i];
+        for (int i = 0; i < 5; i++) conn->chmap[i] = g_chm_new[i];
+        conn->num_used = 0;
+        for (uint32_t c = 0; c < 37; c++)
+            if (conn->chmap[c >> 3] & (1u << (c & 7))) conn->used[conn->num_used++] = (uint8_t)c;
+        if (conn->num_used == 0) {
+            for (int i = 0; i < 5; i++) conn->chmap[i] = old_chm[i];
+            conn->num_used = old_num;
+            for (uint32_t i = 0; i < old_num; i++) conn->used[i] = old_used[i];
+        }
+        g_chm_pending = 0;
+    }
+    if (g_upd_pending && (uint16_t)(counter - g_upd_instant) < 32768u) {
+        /* 晚 late 个事件应用：instant 点之后 central 已按新 interval 走了
+         * late 个周期,而我们的 anchor 是按旧 interval 推的——补上差值。 */
+        uint16_t late = (uint16_t)(counter - g_upd_instant);
+        int64_t drift = (int64_t)g_upd_interval_us - (int64_t)conn->interval_us;
+        *anchor = (uint64_t)((int64_t)*anchor + (int64_t)g_upd_winoffset_us +
+                             (int64_t)late * drift);
+        conn->interval_us = g_upd_interval_us;
+        conn->winsize_us  = g_upd_winsize_us;
+        conn->timeout_us  = g_upd_timeout_us;
+        *max_misses = conn->timeout_us / conn->interval_us;
+        if (*max_misses < 6u) *max_misses = 6u;
+        g_upd_pending = 0;
+        at_instant = 1;
+        *misses = 0;                           /* fresh sync window */
+    }
+
+    uint32_t ch = csa1_next(conn);
+
+    /* Window widening: the longer since our last sync, the wider we must
+     * listen. WW = (elapsed since sync) * combined_ppm. */
+    uint32_t since_sync = (*misses + 1u) * conn->interval_us;
+    uint32_t ww = since_sync / WW_DIV;
+    uint32_t pre = 400u + ww;
+    uint32_t first_extra = (events == 0u || at_instant) ? conn->winsize_us : 0u;
+    uint32_t win = pre + ww + first_extra + 1500u;
+
+    uint32_t cap = conn->interval_us / 2u;          /* don't overrun next event */
+    if (pre > cap) pre = cap;
+    if (win > conn->interval_us - 200u) win = conn->interval_us - 200u;
+
+    *pre_out = pre;
+    *win_out = win;
+    return ch;
+}
+
+/* 连接收尾的公共簿记（同步/异步引擎共用）。 */
+static void conn_finish(const ll_ops_t *ops, ll_stats_t *st,
+                        uint32_t events, uint32_t hits)
+{
+    if (ops->led) ops->led(0);
+    ops->radio_disable();
+    st->events = events;
+    st->hits = hits;
+    st->mtu = ops->mtu_get ? ops->mtu_get() : 0u;
+    st->tx_octets = ops->txoct_get ? ops->txoct_get() : 0u;
+}
+
+/* Returns after the connection ends (supervision-style timeout on misses). */
+void ll_conn_run(const ll_ops_t *ops, ll_conn_t *conn,
+                 uint64_t t_ci_end, ll_stats_t *st)
+{
+    conn_begin(ops, conn, st);
 
     uint64_t anchor = t_ci_end + 1250u + conn->winoffset_us;
     uint32_t misses = 0, events = 0, hits = 0;
     uint16_t counter = 0;           /* connEventCounter */
-    int at_instant = 0;             /* this event uses a fresh transmit window */
 
     /* Give up only when we've missed the peer for the whole supervision
      * timeout, not after a handful of packets (which may just be RF loss). */
@@ -492,58 +570,9 @@ void ll_conn_run(const ll_ops_t *ops, ll_conn_t *conn,
     if (max_misses < 6u) max_misses = 6u;
 
     for (;;) {
-        /* Apply a pending update at its Instant (before this event). 用 16 位
-         * 回绕安全的 "已到达/已越过" 判定而非 ==：链路恶化时 IND 可能重传
-         * 多次才被收到，instant 已过——严格相等会永远不切换（central 已按
-         * 新参数跳频，我们从此全 miss 直到监督超时,实板 Android 复现）。
-         * 晚应用只损失中间几个事件,随后重新同步。 */
-        at_instant = 0;
-        if (g_chm_pending && (uint16_t)(counter - g_chm_instant) < 32768u) {
-            /* 非法 ChM（0 个信道会让 CSA#1 重映射模零）：回滚保留旧表 */
-            uint8_t old_chm[5], old_num = conn->num_used, old_used[37];
-            for (int i = 0; i < 5; i++) old_chm[i] = conn->chmap[i];
-            for (uint32_t i = 0; i < old_num; i++) old_used[i] = conn->used[i];
-            for (int i = 0; i < 5; i++) conn->chmap[i] = g_chm_new[i];
-            conn->num_used = 0;
-            for (uint32_t c = 0; c < 37; c++)
-                if (conn->chmap[c >> 3] & (1u << (c & 7))) conn->used[conn->num_used++] = (uint8_t)c;
-            if (conn->num_used == 0) {
-                for (int i = 0; i < 5; i++) conn->chmap[i] = old_chm[i];
-                conn->num_used = old_num;
-                for (uint32_t i = 0; i < old_num; i++) conn->used[i] = old_used[i];
-            }
-            g_chm_pending = 0;
-        }
-        if (g_upd_pending && (uint16_t)(counter - g_upd_instant) < 32768u) {
-            /* 晚 late 个事件应用：instant 点之后 central 已按新 interval 走了
-             * late 个周期,而我们的 anchor 是按旧 interval 推的——补上差值。 */
-            uint16_t late = (uint16_t)(counter - g_upd_instant);
-            int64_t drift = (int64_t)g_upd_interval_us - (int64_t)conn->interval_us;
-            anchor = (uint64_t)((int64_t)anchor + (int64_t)g_upd_winoffset_us +
-                                (int64_t)late * drift);
-            conn->interval_us = g_upd_interval_us;
-            conn->winsize_us  = g_upd_winsize_us;
-            conn->timeout_us  = g_upd_timeout_us;
-            max_misses = conn->timeout_us / conn->interval_us;
-            if (max_misses < 6u) max_misses = 6u;
-            g_upd_pending = 0;
-            at_instant = 1;
-            misses = 0;                            /* fresh sync window */
-        }
-
-        uint32_t ch = csa1_next(conn);
-
-        /* Window widening: the longer since our last sync, the wider we must
-         * listen. WW = (elapsed since sync) * combined_ppm. */
-        uint32_t since_sync = (misses + 1u) * conn->interval_us;
-        uint32_t ww = since_sync / WW_DIV;
-        uint32_t pre = 400u + ww;
-        uint32_t first_extra = (events == 0u || at_instant) ? conn->winsize_us : 0u;
-        uint32_t win = pre + ww + first_extra + 1500u;
-
-        uint32_t cap = conn->interval_us / 2u;          /* don't overrun next event */
-        if (pre > cap) pre = cap;
-        if (win > conn->interval_us - 200u) win = conn->interval_us - 200u;
+        uint32_t pre, win;
+        uint32_t ch = conn_event_setup(conn, &anchor, counter, events,
+                                       &misses, &max_misses, &pre, &win);
 
         g_conn_evt = counter;         /* expose to conn_reply for DLE timing */
         wait_until(ops, anchor - pre);
@@ -563,26 +592,169 @@ void ll_conn_run(const ll_ops_t *ops, ll_conn_t *conn,
             misses = 0;
             anchor = got_anchor + conn->interval_us;    /* re-sync to peer */
             if (g_terminate) {                          /* peer closed the link */
-                if (ops->led) ops->led(0);
-                ops->radio_disable();
-                st->events = events;
-                st->hits = hits;
-                st->mtu = ops->mtu_get ? ops->mtu_get() : 0u;
-                st->tx_octets = ops->txoct_get ? ops->txoct_get() : 0u;
+                conn_finish(ops, st, events, hits);
                 return;
             }
         } else {
             misses++;
             anchor += conn->interval_us;                /* keep cadence */
             if (misses >= max_misses) {
-                if (ops->led) ops->led(0);
-                ops->radio_disable();
-                st->events = events;
-                st->hits = hits;
-                st->mtu = ops->mtu_get ? ops->mtu_get() : 0u;
-                st->tx_octets = ops->txoct_get ? ops->txoct_get() : 0u;
+                conn_finish(ops, st, events, hits);
                 return;
             }
         }
     }
+}
+
+/* ==================================================== 事件化引擎（04） == */
+/* 状态机：WAIT_ANCHOR --锚点闹钟--> LISTEN --RX IRQ--> (T_IFS reply) TX
+ *         --TX IRQ--> 事件结算 --> WAIT_ANCHOR ...
+ * 所有回调运行在 IRQ 上下文；要求 GRTC 闹钟与 RADIO IRQ 同优先级（互不
+ * 抢占），引擎按单上下文写、无锁。协议逻辑全部复用同步引擎的静态函数
+ * （conn_begin/conn_event_setup/conn_reply），两引擎语义一致。 */
+#define AS_IDLE        0u
+#define AS_WAIT_ANCHOR 1u
+#define AS_LISTEN      2u
+#define AS_TX          3u
+
+#define AS_ALARM_ANCHOR 0u   /* ll.h 约定：LL 占用闹钟通道 0/1 */
+#define AS_ALARM_WINDOW 1u
+
+static struct {
+    const ll_ops_t *ops;
+    ll_conn_t      *conn;
+    ll_stats_t     *st;
+    void          (*on_disconnect)(void);
+    volatile uint8_t state;
+    uint64_t anchor;
+    uint64_t win_end;              /* 本事件监听窗口截止时刻 */
+    uint64_t got_anchor;
+    uint32_t misses, events, hits, max_misses;
+    uint16_t counter;
+    uint32_t ch;
+} as;
+
+static void as_alarm_cb(uint32_t ch);
+
+static void as_schedule_event(void)
+{
+    uint32_t pre, win;
+    as.ch = conn_event_setup(as.conn, &as.anchor, as.counter, as.events,
+                             &as.misses, &as.max_misses, &pre, &win);
+    as.win_end = as.anchor - pre + win;
+    as.state = AS_WAIT_ANCHOR;
+    as.ops->alarm_set(AS_ALARM_ANCHOR, as.anchor - pre, as_alarm_cb);
+}
+
+static void as_finish(void)
+{
+    as.state = AS_IDLE;
+    conn_finish(as.ops, as.st, as.events, as.hits);
+    if (as.on_disconnect) {
+        as.on_disconnect();
+    }
+}
+
+/* 事件结算（ok=1 时 as.got_anchor 有效），并排下一个事件。 */
+static void as_event_done(int ok)
+{
+    const ll_ops_t *ops = as.ops;
+    if (ops->on_conn_event) {
+        ops->on_conn_event(as.counter, ok, as.ch);
+    }
+    as.events++;
+    as.counter++;
+    as.st->events = as.events;     /* 实时可见：主循环随时读 st 心跳 */
+    as.st->hits = as.hits + (ok ? 1u : 0u);
+    if (ok) {
+        if (as.hits == 0 && ops->led) ops->led(1);
+        as.hits++;
+        as.misses = 0;
+        as.anchor = as.got_anchor + as.conn->interval_us;
+        if (g_terminate) {
+            as_finish();
+            return;
+        }
+    } else {
+        as.misses++;
+        as.anchor += as.conn->interval_us;
+        if (as.misses >= as.max_misses) {
+            as_finish();
+            return;
+        }
+    }
+    as_schedule_event();
+}
+
+static void as_alarm_cb(uint32_t ch)
+{
+    if (ch == AS_ALARM_ANCHOR && as.state == AS_WAIT_ANCHOR) {
+        g_conn_evt = as.counter;
+        as.ops->radio_set_channel(data_freq(as.ch), as.ch);
+        as.state = AS_LISTEN;
+        as.ops->radio_rx_arm(rx_buf, sizeof(rx_buf));
+        /* 窗口超时闹钟：窗口尾 + 最大 PDU 空中时间余量——窗口沿上正在
+         * 接收的包让 RX IRQ 先完成，超时晚判几 ms 不影响锚点节奏。 */
+        as.ops->alarm_set(AS_ALARM_WINDOW, as.win_end + 2600u, as_alarm_cb);
+    } else if (ch == AS_ALARM_WINDOW && as.state == AS_LISTEN) {
+        as.ops->radio_disable();
+        as_event_done(0);
+    }
+}
+
+void ll_async_on_radio_rx(uint64_t t_addr, uint64_t t_end, int crc_ok)
+{
+    if (as.state != AS_LISTEN) {
+        return;                        /* 迟到/杂散回调 */
+    }
+    as.ops->alarm_cancel(AS_ALARM_WINDOW);
+    if (!crc_ok) {
+        /* CRC 坏包按规范丢弃、本事件关闭（不回复），计一次 miss */
+        as.ops->radio_disable();
+        as_event_done(0);
+        return;
+    }
+    conn_reply(as.ops, as.st, 1);
+    if ((rx_buf[0] & 3u) == 3u || rx_buf[1] != 0u) {   /* 验尸环形缓冲 */
+        uint32_t slot = as.st->rxpdu_n % 6u;
+        uint32_t n = 2u + rx_buf[1];
+        if (n > 32u) n = 32u;
+        for (uint32_t i = 0; i < n; i++) as.st->rxpdu[slot][i] = rx_buf[i];
+        as.st->txhdr[slot] = tx_buf[0];
+        as.st->rxevt[slot] = (uint16_t)g_conn_evt;
+        as.st->rxpdu_n++;
+    }
+    as.got_anchor = t_addr - 40u;
+    uint32_t blen = (uint32_t)tx_buf[1] + 2u;
+    as.state = AS_TX;
+    if (as.ops->radio_reply_arm(tx_buf, blen, t_end)) {
+        as.st->tx_done++;              /* 发送完成走 ll_async_on_radio_tx */
+    } else {
+        as.st->tx_timeouts++;          /* 构建超时放弃回复：事件仍算 hit */
+        as_event_done(1);
+    }
+}
+
+void ll_async_on_radio_tx(void)
+{
+    if (as.state != AS_TX) {
+        return;
+    }
+    as_event_done(1);
+}
+
+void ll_async_start(const ll_ops_t *ops, ll_conn_t *conn, uint64_t t_ci_end,
+                    ll_stats_t *st, void (*on_disconnect)(void))
+{
+    conn_begin(ops, conn, st);
+    as.ops = ops;
+    as.conn = conn;
+    as.st = st;
+    as.on_disconnect = on_disconnect;
+    as.anchor = t_ci_end + 1250u + conn->winoffset_us;
+    as.misses = 0; as.events = 0; as.hits = 0;
+    as.counter = 0;
+    as.max_misses = conn->timeout_us / conn->interval_us;
+    if (as.max_misses < 6u) as.max_misses = 6u;
+    as_schedule_event();
 }

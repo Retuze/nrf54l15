@@ -75,6 +75,18 @@ typedef struct ll_ops {
      * 取一条待发 ATT 载荷（≤ max 字节）顶替空包；返回长度，0 = 无。
      * L2CAP 包装由 LL 负责。每个事件最多一条（响应优先于通知）。 ---- */
     uint32_t (*att_notify_pull)(uint8_t *att_out, uint32_t max);
+
+    /* ---- 异步能力（04_async_ll 的事件化引擎用；同步实验可全 NULL） ----
+     * alarm：绝对时刻闹钟，cb 在 IRQ 上下文回调（目标机 = time_alarm_set）。
+     *   LL 占用通道 0（锚点）与 1（RX 窗口超时）。
+     * radio_rx_arm：装 RX 并立即返回；包尾（或 TX 完成）经驱动 IRQ 回调，
+     *   由 main 桥接到 ll_async_on_radio_rx / ll_async_on_radio_tx。
+     * radio_reply_arm：T_IFS 定时发送（构建超时返回 0 放弃），发送完成走
+     *   驱动 IRQ → ll_async_on_radio_tx。 */
+    void (*alarm_set)(uint32_t ch, uint64_t t_us, void (*cb)(uint32_t ch));
+    void (*alarm_cancel)(uint32_t ch);
+    void (*radio_rx_arm)(uint8_t *buf, uint32_t maxlen);
+    int  (*radio_reply_arm)(const uint8_t *pkt, uint32_t len, uint64_t rx_end_us);
 } ll_ops_t;
 
 /* 构建 ADV_IND/SCAN_RSP 模板（模块内缓冲）。广播名固定 "54L-GATT"。 */
@@ -88,5 +100,21 @@ int  ll_adv_sweep(const ll_ops_t *ops, ll_conn_t *conn,
 /* 连接状态机：阻塞到断链（TERMINATE 或 supervision 超时）。st 清零后填充。 */
 void ll_conn_run(const ll_ops_t *ops, ll_conn_t *conn,
                  uint64_t t_ci_end, ll_stats_t *st);
+
+/* ==== 事件化连接引擎（04_async_ll，方案 B）====
+ * 语义与 ll_conn_run 一致，但不阻塞：连接态由闹钟 + radio IRQ 驱动，
+ * 主循环解放。要求 ops 的异步能力字段全部就位，且 GRTC 闹钟 IRQ 与
+ * RADIO IRQ 配同一优先级（回调之间不抢占——引擎按单上下文写）。
+ *
+ * ll_async_start 装第一个锚点闹钟后立即返回；断链（TERMINATE 或监督
+ * 超时）时在 IRQ 上下文回调 on_disconnect（内部已 radio_disable、填 st）。
+ * conn/st 生命周期须覆盖整个连接。同一时间只允许一个引擎实例。 */
+void ll_async_start(const ll_ops_t *ops, ll_conn_t *conn, uint64_t t_ci_end,
+                    ll_stats_t *st, void (*on_disconnect)(void));
+
+/* IRQ 桥接入口（main 的驱动回调里调；宿主测试的 pump 直接调）：
+ * on_radio_rx = RX 结束（含 CRC 错）；on_radio_tx = 回复发送完成。 */
+void ll_async_on_radio_rx(uint64_t t_addr, uint64_t t_end, int crc_ok);
+void ll_async_on_radio_tx(void);
 
 #endif /* LL_H */

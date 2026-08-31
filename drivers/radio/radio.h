@@ -46,4 +46,23 @@ void radio_disable(void);
 void radio_dbg_tifs(uint32_t *late_min, uint32_t *late_max,
                     uint32_t *ramp_min, uint32_t *ramp_max);
 
+/* ==== 异步（IRQ 驱动）API —— 04_async_ll 用 ====
+ * is_rx=1：RX 结束（t_addr/t_end/crc_ok 有效）；is_rx=0：TX 发送完成。
+ * 回调在 RADIO IRQ 上下文。radio_irq_init 只注册回调 + NVIC 使能（中断源
+ * 由 radio_rx_arm 打开、radio_disable/TX 完成关闭——与同步轮询 API 互斥
+ * 使用：同一时刻只允许一种风格在收发）。 */
+typedef void (*radio_evt_cb_t)(int is_rx, uint64_t t_addr_us, uint64_t t_end_us,
+                               int crc_ok);
+void radio_irq_init(radio_evt_cb_t cb);
+
+/* 装 RX 并立即返回：RXEN + ADDRESS/PHYEND/DISABLED 中断。包尾（PHYEND→
+ * DISABLED 短接）触发回调 cb(is_rx=1, ...)。窗口超时由调用方闹钟负责，
+ * 超时路径调 radio_disable() 撤收。 */
+void radio_rx_arm(uint8_t *pkt, uint32_t maxlen);
+
+/* T_IFS 定时回复（非阻塞版 radio_reply_at）：装包 → 忙等到 (rx_end+LEAD)
+ * → TXEN 后立即返回 1；发送完成经 IRQ 回调 cb(is_rx=0)。构建已超时则
+ * 返回 0（radio 已撤收，不发迟到包）。须在 RX 回调上下文内调用。 */
+int radio_reply_arm(const uint8_t *pkt, uint32_t len, uint64_t rx_end_us);
+
 #endif /* RADIO_H */

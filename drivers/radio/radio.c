@@ -1,6 +1,7 @@
 #include "radio.h"
 #include "time.h"
 #include "nrf.h"
+#include "nvic.h"
 
 /*
  * nRF54L 无硬件 TIFS 回转，RX->TX 切换是软件定时：收到包结束后，等到
@@ -77,8 +78,20 @@ void radio_set_channel(uint32_t freq_off, uint32_t white_ch)
         (NRF_RADIO_S->DATAWHITE & RADIO_DATAWHITE_POLY_Msk) | (0x40u | white_ch);
 }
 
+/* 异步模式状态（radio_irq_init/rx_arm/reply_arm + RADIO_0_IRQHandler） */
+#define AMODE_IDLE 0u
+#define AMODE_RX   1u
+#define AMODE_TX   2u
+#define AIRQ_MASK (RADIO_INTENSET00_ADDRESS_Msk | RADIO_INTENSET00_PHYEND_Msk | \
+                   RADIO_INTENSET00_DISABLED_Msk)
+static radio_evt_cb_t s_evt_cb;
+static volatile uint8_t  s_amode;
+static volatile uint64_t s_t_addr, s_t_end;
+
 void radio_disable(void)
 {
+    NRF_RADIO_S->INTENCLR00 = AIRQ_MASK;     /* 异步模式撤收；同步路径无害 */
+    s_amode = AMODE_IDLE;
     NRF_RADIO_S->SHORTS = 0;
     NRF_RADIO_S->EVENTS_DISABLED = 0;
     NRF_RADIO_S->TASKS_DISABLE = 1;
@@ -195,4 +208,84 @@ int radio_reply_at(const uint8_t *pkt, uint32_t len, uint64_t rx_end_us)
         }
     }
     return 1;
+}
+
+/* ==================================================== 异步（IRQ）API ==== */
+
+void radio_irq_init(radio_evt_cb_t cb)
+{
+    s_evt_cb = cb;
+    NRF_RADIO_S->INTENCLR00 = AIRQ_MASK;
+    nvic_set_prio(RADIO_0_IRQn, 0u);         /* 与 GRTC 同优先级（都是默认 0）：
+                                              * 回调互不抢占，LL 引擎单上下文 */
+    nvic_enable(RADIO_0_IRQn);
+}
+
+void radio_rx_arm(uint8_t *pkt, uint32_t maxlen)
+{
+    (void)maxlen;                            /* MAXLEN 由 PCNF1 静态配置 */
+    NRF_RADIO_S->PACKETPTR = (uint32_t)pkt;
+    NRF_RADIO_S->SHORTS = RADIO_SHORTS_READY_START_Msk | RADIO_SHORTS_PHYEND_DISABLE_Msk;
+    NRF_RADIO_S->EVENTS_DISABLED = 0;
+    NRF_RADIO_S->EVENTS_CRCOK    = 0;
+    NRF_RADIO_S->EVENTS_CRCERROR = 0;
+    NRF_RADIO_S->EVENTS_ADDRESS  = 0;
+    NRF_RADIO_S->EVENTS_PHYEND   = 0;
+    s_amode = AMODE_RX;
+    NRF_RADIO_S->INTENSET00 = AIRQ_MASK;
+    NRF_RADIO_S->TASKS_RXEN = 1;
+}
+
+int radio_reply_arm(const uint8_t *pkt, uint32_t len, uint64_t rx_end_us)
+{
+    (void)len;
+    /* 调用方处于 RX 完成回调（DISABLED 已发生并被 ISR 清除），radio 空闲。 */
+    NRF_RADIO_S->PACKETPTR = (uint32_t)pkt;
+    if ((int64_t)((rx_end_us + TURNAROUND_LEAD_US + TURNAROUND_SLACK_US) - time_now_us()) < 0) {
+        radio_disable();                     /* 宁缺毋晚（同 radio_reply_at） */
+        return 0;
+    }
+    while ((int64_t)((rx_end_us + TURNAROUND_LEAD_US) - time_now_us()) > 0) {
+    }
+    NRF_RADIO_S->TASKS_TXEN = 1;
+    /* busy-wait 与 TXEN 之间禁止插任何代码（见 radio_reply_at 注释） */
+    uint64_t t_txen = time_now_us();
+    {
+        uint32_t late = (uint32_t)(t_txen - (rx_end_us + TURNAROUND_LEAD_US));
+        if (late < g_tifs_late_min) g_tifs_late_min = late;
+        if (late > g_tifs_late_max) g_tifs_late_max = late;
+    }
+    s_amode = AMODE_TX;                      /* TX 完成走 DISABLED IRQ */
+    return 1;
+}
+
+void RADIO_0_IRQHandler(void)
+{
+    if (NRF_RADIO_S->EVENTS_ADDRESS) {
+        NRF_RADIO_S->EVENTS_ADDRESS = 0;
+        s_t_addr = time_now_us();            /* RX：锚点时间戳（TX 时无害覆盖） */
+    }
+    if (NRF_RADIO_S->EVENTS_PHYEND) {
+        NRF_RADIO_S->EVENTS_PHYEND = 0;
+        s_t_end = time_now_us();             /* RX：包尾时间戳（T_IFS 基准） */
+    }
+    if (NRF_RADIO_S->EVENTS_DISABLED) {
+        NRF_RADIO_S->EVENTS_DISABLED = 0;
+        uint8_t mode = s_amode;
+        if (mode == AMODE_RX) {
+            /* CRC 判定在 PHYEND 后极短时间内落位；DISABLED（经短接）到此
+             * 已有 ~6us + ISR 延迟，兜底再等最多 CRC_WAIT_US。 */
+            uint64_t t0 = time_now_us();
+            while (NRF_RADIO_S->EVENTS_CRCOK == 0 && NRF_RADIO_S->EVENTS_CRCERROR == 0) {
+                if ((time_now_us() - t0) > CRC_WAIT_US) break;
+            }
+            int crc_ok = NRF_RADIO_S->EVENTS_CRCOK ? 1 : 0;
+            s_amode = AMODE_IDLE;            /* 回调内 reply_arm 可切到 TX */
+            if (s_evt_cb) s_evt_cb(1, s_t_addr, s_t_end, crc_ok);
+        } else if (mode == AMODE_TX) {
+            NRF_RADIO_S->INTENCLR00 = AIRQ_MASK;
+            s_amode = AMODE_IDLE;
+            if (s_evt_cb) s_evt_cb(0, 0, 0, 0);
+        }
+    }
 }
