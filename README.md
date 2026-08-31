@@ -115,21 +115,26 @@ pyocd cmd -t nrf54l -c "reset" -c "halt" -c "reg pc" -c "read32 0x50050410"
 ```
 
 BLE 侧日志：`python3 scripts/serial_log.py`（串口日志），`scripts/scan_adv.py` / `dump_rx.py` /
-`dump_conn.py` / `connect_try.py` 为 host 侧分析工具。
+`dump_conn.py` / `connect_try.py` 为 host 侧分析工具；`proto_client.py` 为 05_proto 的
+全协议实板验证客户端（bleak：GET/REPORT/ACK + SET{TIME} 幂等重发 + 时间同步校验）。
+
+坑：Windows 异常断链后系统会自动回连占住板子（不广播、串口安静），
+`pyocd cmd -t nrf54l -c reset` 解开；同一地址换 GATT 表后 bleak 可能因系统
+GATT 缓存报 services=0 或找不到特征，重试/重启蓝牙即可。
 
 ## 实验路线图
 
 | 实验 | 主题 | 状态 |
 |---|---|---|
-| 01_conn | BLE 连接（广告 → CONNECT_IND → 数据信道 SN/NESN + DLE + LL 过程）+ ATT/GATT 服务 | 代码就绪 · **待实板验证** |
-| 02_fault | HardFault 现场打印验证：故意触发总线错误 → g_fault[] + console_tx_abort() 归零 TX → printf 现场行（预期 CFSR=0x00008200、HFSR=0x40000000） | 代码就绪 · **待实板验证** |
-| 03_conn_log | 连接态实时日志（方案 A）：common/log + uart_tx + ll on_conn_event 钩子，逐事件 "evt=N ok/miss ch=X"（全工程 printf 仅 HardFault） | 代码就绪 · **待实板验证** |
+| 01_conn | BLE 连接（广告 → CONNECT_IND → 数据信道 SN/NESN + DLE + LL 过程）+ ATT/GATT 服务 | **实板验证通过**（2026-08-31） |
+| 02_fault | HardFault 现场打印验证：故意触发总线错误 → g_fault[] + console_tx_abort() 归零 TX → printf 现场行（预期 CFSR=0x00008200、HFSR=0x40000000） | **实板验证通过**（2026-08-31） |
+| 03_conn_log | 连接态实时日志（方案 A）：common/log + uart_tx + ll on_conn_event 钩子，逐事件 "evt=N ok/miss ch=X"（全工程 printf 仅 HardFault） | **实板验证通过**（2026-08-31） |
 | 04_async_ll | 事件化 LL（方案 B，计划）：time_alarm 定锚 + RADIO IRQ 收发，连接态进 IRQ/调度，主循环解放 | 计划 |
 | 07_adv_scan | LE 双角色第一步（计划）：广播 + 扫描交替——事件队列调度器雏形 + scan_sm 被动扫描，验证碰撞让步 | 计划 |
 | 08_central_conn | central 侧连接（计划）：扫描 → 收 ADV → 发 CONNECT_IND → 主机 anchor 时序 + WinOffset 相位避碰 | 计划 |
 | 09_multi_role | 多连接/多角色完整调度（计划）：参数避碰 + 优先级让步 + 多 conn 实例 | 计划 |
-| 05_proto | 应用协议固件接线：gatt 0xFFF1 写回调+通知队列 + proto 挂载，GET→全量 REPORT(ACK_REQ 超时重发)/SET{TIME}/ACK（fw 侧完整语义） | 代码就绪 · **待实板验证** |
-| 06_timer | 普通定时器（TIMER00 多实例）：1s 周期回调闪灯 + 3s 单次回调，主循环自由——GRTC 是 BLE 专用时基，应用定时不占它 | 代码就绪 · **待实板验证** |
+| 05_proto | 应用协议固件接线：gatt 0xFFF1 写回调+通知队列 + proto 挂载，GET→全量 REPORT(ACK_REQ 超时重发)/SET{TIME}/ACK（fw 侧完整语义） | **实板验证通过**（2026-08-31） |
+| 06_timer | 普通定时器（TIMER00 多实例）：1s 周期回调闪灯 + 3s 单次回调，主循环自由——GRTC 是 BLE 专用时基，应用定时不占它 | **实板验证通过**（2026-08-31） |
 | （待做） | tools/：SVD → 寄存器头生成（gen_soc.py 迁移）、vendor/ 裁剪到只用到的芯片头 | 计划 |
 | （待做） | FLPR（RISC-V）核实验 | 计划 |
 
