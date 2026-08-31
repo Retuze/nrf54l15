@@ -440,6 +440,7 @@ static int adv_and_listen(const ll_ops_t *ops, uint32_t n, ll_conn_t *conn,
             /* Answer the scan request with a SCAN_RSP, T_IFS later (software
              * timed — nRF54L has no hardware TIFS turnaround). */
             ast->scan_req++;
+            for (uint32_t k = 0; k < 6; k++) ast->scan_addr[k] = rx_buf[2 + k];
             if (ops->radio_reply_at(scan_rsp_pdu, (uint32_t)scan_rsp_pdu[1] + 2u, t_end)) {
                 ast->scan_rsp++;
             }
@@ -578,6 +579,13 @@ void ll_conn_run(const ll_ops_t *ops, ll_conn_t *conn,
         wait_until(ops, anchor - pre);
         uint64_t got_anchor;
         int ok = conn_event(ops, ch, win, &got_anchor, st);
+        {   /* 逐事件踪迹（断链验尸用） */
+            uint8_t *tr = st->evtrace[counter % 64u];
+            tr[0] = (uint8_t)counter;
+            tr[1] = ok ? rx_buf[0] : 0xFFu;
+            tr[2] = ok ? tx_buf[0] : 0xFFu;
+            tr[3] = (uint8_t)ch;
+        }
         if (ops->on_conn_event) {
             /* reply 已发完，距下个 anchor 有 ~interval 松弛——安全插桩点。
              * 回调里只做微秒级操作（如入队日志），阻塞会毁时序。 */

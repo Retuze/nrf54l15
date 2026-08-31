@@ -122,14 +122,36 @@ BLE 侧日志：`python3 scripts/serial_log.py`（串口日志），`scripts/sca
 `pyocd cmd -t nrf54l -c reset` 解开；同一地址换 GATT 表后 bleak 可能因系统
 GATT 缓存报 services=0 或找不到特征，重试/重启蓝牙即可。
 
-**T_IFS 软件时序的校准与对端宽容度**（2026-08-31 实板结论）：空口回复时刻 =
-`rx_end + LEAD + busy-wait 退出滞后(2..6us) + TXEN ramp(实测 43..45us)`，
-`radio_dbg_tifs()` 可读 late/ramp 实测。各对端接收窗口宽容度差异巨大：
-PC(Realtek) 早/晚几十 us 都收；iOS 中等；**安卓最严——空口 ~146us 能收、
-~150+us 即拒收，且 SCAN_RSP 收不到就不上报设备（表现为"扫不到"）**。
-LEAD=98 即安卓可收；busy-wait 与 TASKS_TXEN 之间不能插任何代码（一次
-GRTC 读 ≈2-3us 就能把响应推出安卓窗口）。构建超时的回复宁可放弃也不晚发
-（TURNAROUND_SLACK_US=5）：响应已在 LL 的 pend 队列，对端重传时下事件秒回。
+**RF 三大必修课**（2026-08-31 全天实板追出，缺一个安卓就收不到）：
+1. **FICR 出厂修调必须应用**（startup.c `apply_ficr_trims`）：TRIMCNF[64]
+   含 RADIO 模拟前端等 trim，SystemInit 的职责，裸机 startup 漏掉的代价是
+   载波质量边缘化（宽容接收机能收但 RSSI 低，安卓拒收）。终止符是
+   ADDR==0xFFFFFFFF **或 0**——按 0xFFFFFFFF 跳过会把 0 写进地址 0 锁死。
+2. **HFXO 要 XOTUNE 且周期重调谐**（clock_hfxo_start/retune）：XOSTARTED
+   只是起振，XOTUNED 才是调谐完成（Zephyr 原话"HFCLK is stable after
+   XOTUNED"）；调谐是一次性的，芯片温漂后载波偏移——症状是**长 PDU 先
+   失联**（相位随包长累积，短 ACK 能收、长 REPORT 收不到）。
+3. **T_IFS 用硬件定时**（radio.c：RADIO.PHYEND →DPPI→ TIMER10.CLEAR，
+   TIMER10.COMPARE →DPPI→ RADIO.TXEN，TIMER10 @32MHz）：触发点 =
+   150 − RX chain delay(9.4us，PHYEND 比空口末位晚这么多) − TXEN ramp
+   (40.9us) ≈ **100us**（常量取自 Zephyr radio_nrf54lx.h；按键扫掠实测
+   98 不可见/101 可见/104 不可见，窗口中心吻合）。安卓接收窗口仅 ±2us，
+   软件定时的 3..10us 抖动恰好骑窗=全天"时好时坏"的总根源。构建超时的
+   回复宁可放弃也不晚发：响应在 LL pend 队列，对端重传时下事件秒回。
+
+对端宽容度谱系：PC(Realtek) 早/晚几十 us 都收 ≫ iOS ≫ 安卓（±2us 窗 +
+SCAN_RSP 收不到就不上报设备，表现为"扫不到"）。**验证 RF 改动永远拿
+安卓当裁判，PC 能收证明不了任何事**。
+
+**iOS 系统级自动回连占线坑**：iOS 对连过的外设会后台无限回连（连上后零
+GATT 活动的纯空闲连接，断开秒回连,换广播地址都甩不掉）；占线期间不广播
+=谁都扫不到。排查"扫不到"先看串口是否 `[conn] connected`。解法：关 iOS
+蓝牙或让它忘记设备。
+
+**E-SafeNet 加密（本机）**：源文件透明加密，白名单外的工具（sed/head/
+awk 等）读写皆密文——**sed -i 会毁文件**。只能用 Claude 的 Read/Edit/Write
+或 git checkout 恢复；llvm-cov gcov 也因此读密文，coverage.sh 已改用
+source-based coverage（报告阶段不读源文件）。
 
 ## 实验路线图
 

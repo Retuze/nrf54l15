@@ -41,8 +41,12 @@ int radio_reply_at(const uint8_t *pkt, uint32_t len, uint64_t rx_end_us);
 /* 关 radio（清 SHORTS → TASKS_DISABLE → 等 DISABLED）。 */
 void radio_disable(void);
 
-/* TIFS 软件定时诊断：late = busy-wait 退出迟到量 min/max（µs），
- * ramp = TXEN→EVENTS_READY 实测 min/max（µs）。读取后复位。 */
+/* 硬件 T_IFS 触发点调整（µs,PHYEND→TXEN;空口 = 该值 + TXEN ramp ~41us）。
+ * 标定/扫掠用。 */
+void radio_tifs_set_cc(uint32_t us);
+
+/* TIFS 软件定时诊断：late = 装订阅时刻 min/max（µs,构建耗时观测），
+ * ramp = rx_end→tx_end 全程 min/max（µs）。读取后复位。 */
 void radio_dbg_tifs(uint32_t *late_min, uint32_t *late_max,
                     uint32_t *ramp_min, uint32_t *ramp_max);
 

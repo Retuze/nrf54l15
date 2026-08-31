@@ -43,7 +43,9 @@ static uint32_t rng_next(void)
     rng_state = x; return x;
 }
 
-static const uint8_t OUR_ADDR[6] = { 0xA0, 0xB0, 0xC0, 0xD0, 0xE0, 0xF0 };
+/* F2:E0:D0:C0:B0:A0——2026-08-31 换地址甩掉按旧地址自动回连的占线设备
+ * （占线期间不广播,表现为"扫不到"）。 */
+static const uint8_t OUR_ADDR[6] = { 0xA0, 0xB0, 0xC0, 0xD0, 0xE0, 0xF2 };
 
 /* -------------------------------------- 通知帧队列（proto send 落点） -- */
 #define NOTIFY_SLOTS 4u
@@ -279,7 +281,8 @@ int main(void)
     led_set(0);
     console_init(UARTE20, &console_cfg);
     console_log_init();   /* 打印策略：日志统一走 log（printf 仅 HardFault） */
-    clock_hfxo_start();
+    int hfxo_rc = clock_hfxo_start();
+    log_printf("hfxo start+tune rc=%d\n", hfxo_rc);   /* 0=已调谐 */
     time_init();
     radio_init();
     gatt_init();
@@ -297,6 +300,7 @@ int main(void)
         for (volatile int i = 0; i < 1000; i++) { (void)time_now_us(); }
         log_printf("grtc read x1000: %u us\n", (uint32_t)(time_now_us() - a));
     }
+
 
     rng_state = (uint32_t)time_now_us() | 1u;
     log_puts("\n=== 54L-GATT + app proto (GET/REPORT/SET/ACK) ===\n");
@@ -326,6 +330,20 @@ int main(void)
                 log_printf("[conn] tifs_late=%u..%u ramp=%u..%u us\n",
                            lmin, lmax, rmin, rmax);
             }
+            {   /* 逐事件踪迹：最近 64 事件的 counter/rx头/tx头/信道 */
+                uint32_t last = st.events ? (st.events - 1u) : 0u;
+                uint32_t n = st.events < 64u ? st.events : 64u;
+                for (uint32_t j = 0; j < n; j += 8u) {
+                    log_printf("  tr");
+                    for (uint32_t k = j; k < j + 8u && k < n; k++) {
+                        uint32_t c = (last - (n - 1u) + k) % 64u;
+                        log_printf(" %02x:%02x/%02x@%02u", st.evtrace[c][0],
+                                   st.evtrace[c][1], st.evtrace[c][2], st.evtrace[c][3]);
+                    }
+                    log_puts("\n");
+                    console_flush();                /* 逐行排空,防日志环溢出 */
+                }
+            }
             {   /* 断链后验尸：最后 6 个有内容 PDU（LL 控制/非空数据） */
                 uint32_t cnt = st.rxpdu_n < 6u ? st.rxpdu_n : 6u;
                 uint32_t base = st.rxpdu_n - cnt;
@@ -344,8 +362,20 @@ int main(void)
         }
 
         if ((++adv_events & 127u) == 0)
-            log_printf("[adv] events=%u rx_ok=%u rx_err=%u sreq=%u srsp=%u\n",
-                       adv_events, ast.rx_ok, ast.rx_err, ast.scan_req, ast.scan_rsp);
+            log_printf("[adv] events=%u rx_ok=%u rx_err=%u sreq=%u srsp=%u"
+                       " scanner=%02x%02x%02x%02x%02x%02x\n",
+                       adv_events, ast.rx_ok, ast.rx_err, ast.scan_req, ast.scan_rsp,
+                       ast.scan_addr[5], ast.scan_addr[4], ast.scan_addr[3],
+                       ast.scan_addr[2], ast.scan_addr[1], ast.scan_addr[0]);
+
+        /* HFXO 周期重调谐：温度漂移会把载波拖出手机接收容差（长 PDU 先
+         * 失联）。每 ~14s 一次,XOTUNEERROR 报告时立即。广播间隙做,不占
+         * 连接时序。 */
+        if ((adv_events & 511u) == 0 || clock_hfxo_tune_error()) {
+            int rc = clock_hfxo_retune();
+            if (rc != 0) log_printf("[hfxo] retune rc=%d\n", rc);
+        }
+
 
         time_delay_us(20000u + (rng_next() % 10000u));
     }

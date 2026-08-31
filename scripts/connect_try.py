@@ -14,7 +14,7 @@ import sys
 from bleak import BleakScanner, BleakClient
 
 TARGET_NAME = "54L-GATT"
-TARGET_ADDR = "F0:E0:D0:C0:B0:A0"
+TARGET_ADDR = "F2:E0:D0:C0:B0:A0"
 
 
 async def one_attempt(i: int) -> bool:

@@ -7,8 +7,9 @@
  *      .tbss+.bss, install the picolibc TLS block (_set_tls), run static
  *      constructors (__libc_init_array), then jump to main().
  *
- * No SystemInit magic: the SoC boots on its internal oscillator, which is
- * enough for GPIO. Clock/HFXO setup is done later, per-experiment.
+ * SystemInit 只保留一件不可省的事：应用 FICR.TRIMCNF 出厂修调（见
+ * apply_ficr_trims 注释——漏掉它 RF 载波质量边缘化）。时钟/HFXO 仍由
+ * 各实验自己起（clock_hfxo_start）。
  */
 
 #include <stdint.h>
@@ -117,6 +118,27 @@ const vector_t g_vectors[16 + 270] = {
     [16 + 261 ... 16 + 270 - 1]          = Default_IRQHandler,
 };
 
+/* FICR 出厂修调应用（SystemInit 的核心职责——裸机 startup 必须自己做）。
+ * FICR.TRIMCNF[64]（@0x00FFC400）是 {寄存器地址, 数据} 出厂表，覆盖 XO
+ * 负载电容、RADIO 模拟前端等模拟 trim；ADDR==0xFFFFFFFF 为空槽。
+ * 漏掉这步的代价（2026-08-31 实板追出）：RF 载波质量边缘化——PC/iOS
+ * 的宽容接收机勉强能收（RSSI 偏低 ~10dB），安卓手机集体收不到广播，
+ * 且随温度时好时坏。 */
+static void apply_ficr_trims(void)
+{
+    volatile const uint32_t *t = (volatile const uint32_t *)0x00FFC400u;
+    for (uint32_t i = 0; i < 64u; i++) {
+        uint32_t addr = t[i * 2u];
+        /* 终止条件对齐官方 system_nrf54l.c：ADDR 为 0xFFFFFFFF 或 0 即到
+         * 表尾（实板表尾是 0——按 0xFFFFFFFF 跳过会把 0 写到地址 0 撞
+         * RRAM 总线故障,踩过）。 */
+        if (addr == 0xFFFFFFFFu || addr == 0x00000000u) {
+            break;
+        }
+        *(volatile uint32_t *)addr = t[i * 2u + 1u];
+    }
+}
+
 void Reset_Handler(void)
 {
     /* Enable the FPU (CP10 & CP11 full access) before any FP instruction,
@@ -151,6 +173,8 @@ void Reset_Handler(void)
      * then run static constructors. */
     _set_tls(__tls_base);
     __libc_init_array();
+
+    apply_ficr_trims();
 
     (void)main();
 

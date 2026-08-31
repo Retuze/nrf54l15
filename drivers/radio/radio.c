@@ -12,11 +12,27 @@
 /* 2026-08-31 按实测标定：TXEN→READY ramp=43..45us，busy-wait 退出滞后
  * 2..6us，t_end 读取滞后 ~2us → LEAD=100 时空口 T_IFS ≈ 150us。
  * 手机（窗口严格）对早/晚 ~10us 都会拒收；PC 适配器宽容得多。 */
-#define TURNAROUND_LEAD_US 98u
-
-/* 迟到容忍：构建超时宁可放弃本事件也不晚发——晚发的包手机收不到，
- * 且响应已进 LL 的 pend 队列，对端重传时下个事件零构建立即回复。 */
-#define TURNAROUND_SLACK_US 5u
+/* ==== 硬件 T_IFS（DPPI + TIMER10，全射频域，2026-08-31）====
+ * 软件定时的 TXEN 有 3~10us 抖动（GRTC 读取量化+路径差异），恰好骑在安卓
+ * 接收窗口边缘——温度/构建差异都能推过线（全天反复踩坑的根因之一）。
+ * 硬件链：RADIO.PHYEND --DPPI ch0--> TIMER10.CLEAR（包尾精确清零重计）
+ *         TIMER10.COMPARE[0] --DPPI ch1--> RADIO.TXEN（到点硬件触发）
+ * 软件只负责在触发点前把包装好并使能订阅；发射时刻与软件路径无关，
+ * 抖动 = 1 个 TIMER10 tick（62.5ns）。
+ * TIFS_CC_US 整机标定：空口 T_IFS = CC + TXEN ramp(~41us)+DPPI 延迟，
+ * 与旧软件定时的安卓可收值（TXEN≈PHYEND+102~106us）对齐取 104。 */
+#define TIFS_DPPI_CH_PHYEND 0u
+#define TIFS_DPPI_CH_TXEN   1u
+#define TIFS_TICKS_PER_US   32u          /* TIMER10 @ PRESCALER=0 = 32MHz
+                                          * （实测:按 16M 配时触发点对折在 52us） */
+/* 触发点 = T_IFS − RX chain delay − TXEN ramp = 150 − 9.4 − 40.9 ≈ 100us
+ * （常量取自 Zephyr radio_nrf54lx.h 官方实测:PHYEND 事件比空口末位晚
+ * 9.4us,fast ramp TXEN→空口 40.9us）。按键扫掠实测（安卓为检测器,硬件
+ * 零抖动）：98 不可见、101 可见、104 不可见——窗口中心 ~100,与理论吻合。
+ * 此前软件定时(98+3..10us抖动)恰好骑窗,是全天"时好时坏"的总根源。 */
+#define TIFS_CC_US          100u
+#define TIFS_ARM_MARGIN_US  5u           /* 装订阅至少提前这么多,否则放弃 */
+#define DPPI_EN             0x80000000u
 
 /* 发送等 DISABLED 的上限：251 字节 DLE 空中约 2.1ms */
 #define TX_DONE_TIMEOUT_US 3000u
@@ -43,9 +59,33 @@ void radio_dbg_tifs(uint32_t *late_min, uint32_t *late_max,
     g_ramp_max = 0u;
 }
 
+static void tifs_hw_init(void)
+{
+    NRF_TIMER10_S->TASKS_STOP = 1;
+    NRF_TIMER10_S->MODE = 0;                          /* timer */
+    NRF_TIMER10_S->BITMODE = 3;                       /* 32-bit */
+    NRF_TIMER10_S->PRESCALER = 0;                     /* 16 MHz tick */
+    NRF_TIMER10_S->CC[0] = TIFS_CC_US * TIFS_TICKS_PER_US;
+    NRF_TIMER10_S->SUBSCRIBE_CLEAR = TIFS_DPPI_CH_PHYEND | DPPI_EN;
+    NRF_TIMER10_S->PUBLISH_COMPARE[0] = TIFS_DPPI_CH_TXEN | DPPI_EN;
+    NRF_RADIO_S->PUBLISH_PHYEND = TIFS_DPPI_CH_PHYEND | DPPI_EN;
+    NRF_DPPIC10_S->CHENSET = (1u << TIFS_DPPI_CH_PHYEND) | (1u << TIFS_DPPI_CH_TXEN);
+    NRF_TIMER10_S->TASKS_CLEAR = 1;
+    NRF_TIMER10_S->TASKS_START = 1;
+}
+
+void radio_tifs_set_cc(uint32_t us)
+{
+    NRF_TIMER10_S->CC[0] = us * TIFS_TICKS_PER_US;
+}
+
 void radio_init(void)
 {
+    tifs_hw_init();
     NRF_RADIO_S->MODE = RADIO_MODE_MODE_Ble_1Mbit << RADIO_MODE_MODE_Pos;
+    /* +8dBm：修调（FICR trim）后此档输出正常（安卓 15:29 实测可收）。
+     * 注:未修调时此档输出失真(曾测得 0dBm 反而 RSSI 更高)——trim 先于
+     * 功率档位选择,勿在未修调状态下评估功率。 */
     NRF_RADIO_S->TXPOWER = RADIO_TXPOWER_TXPOWER_Pos8dBm << RADIO_TXPOWER_TXPOWER_Pos;
     NRF_RADIO_S->PCNF0 =
         (8u << RADIO_PCNF0_LFLEN_Pos) |
@@ -91,6 +131,7 @@ static volatile uint64_t s_t_addr, s_t_end;
 void radio_disable(void)
 {
     NRF_RADIO_S->INTENCLR00 = AIRQ_MASK;     /* 异步模式撤收；同步路径无害 */
+    NRF_RADIO_S->SUBSCRIBE_TXEN = 0;         /* 撤硬件 T_IFS 订阅 */
     s_amode = AMODE_IDLE;
     NRF_RADIO_S->SHORTS = 0;
     NRF_RADIO_S->EVENTS_DISABLED = 0;
@@ -162,42 +203,40 @@ int radio_rx(uint8_t *pkt, uint32_t maxlen, uint32_t window_us,
     return 1;
 }
 
+/* 装硬件 T_IFS 订阅（公共核）：包尾时 TIMER10 已被 PHYEND 硬件清零重计。
+ * 返回 1 = 已装订阅（TXEN 将由硬件在 CC 时刻触发）；0 = 已过触发点，
+ * 放弃（宁缺毋晚——迟到的包对端不认;响应留 LL pend 队列等对端重传）。
+ * late 统计 = 软件装订阅时刻（PHYEND 后 µs）——即构建耗时的直接观测。 */
+static int tifs_hw_arm(const uint8_t *pkt)
+{
+    NRF_RADIO_S->PACKETPTR = (uint32_t)pkt;
+    NRF_TIMER10_S->TASKS_CAPTURE[1] = 1;
+    uint32_t t = NRF_TIMER10_S->CC[1];
+    {
+        uint32_t us = t / TIFS_TICKS_PER_US;
+        if (us < g_tifs_late_min) g_tifs_late_min = us;
+        if (us > g_tifs_late_max) g_tifs_late_max = us;
+    }
+    if (t + TIFS_ARM_MARGIN_US * TIFS_TICKS_PER_US >= NRF_TIMER10_S->CC[0]) {
+        radio_disable();
+        return 0;
+    }
+    NRF_TIMER10_S->EVENTS_COMPARE[0] = 0;
+    NRF_RADIO_S->SUBSCRIBE_TXEN = TIFS_DPPI_CH_TXEN | DPPI_EN;
+    return 1;
+}
+
 int radio_reply_at(const uint8_t *pkt, uint32_t len, uint64_t rx_end_us)
 {
-    (void)len;
+    (void)len; (void)rx_end_us;
     /* RX 通道先停（PHYEND_DISABLE 短接保证收到包后必然自动停）。 */
     while (NRF_RADIO_S->EVENTS_DISABLED == 0) {
     }
     NRF_RADIO_S->EVENTS_DISABLED = 0;
     NRF_RADIO_S->EVENTS_PHYEND   = 0;
 
-    NRF_RADIO_S->PACKETPTR = (uint32_t)pkt;
-    /* 已过 T_IFS 触发点：放弃本次回复返回 0（宁缺毋晚），LL 计 miss，
-     * 响应留在 pend 队列等对端重传时立即发出 */
-    if ((int64_t)((rx_end_us + TURNAROUND_LEAD_US + TURNAROUND_SLACK_US) - time_now_us()) < 0) {
-        radio_disable();
+    if (!tifs_hw_arm(pkt)) {
         return 0;
-    }
-    NRF_RADIO_S->EVENTS_READY = 0;
-    while ((int64_t)((rx_end_us + TURNAROUND_LEAD_US) - time_now_us()) > 0) {
-    }
-    NRF_RADIO_S->TASKS_TXEN = 1;
-    /* 时间戳在 TXEN 之后取：busy-wait 与 TXEN 之间不能插入任何代码
-     * （一次 GRTC 读 ≈2-3us 就足以把 SCAN_RSP 推出安卓的接收窗口）。 */
-    uint64_t t_txen = time_now_us();
-
-    /* TIFS 抖动 + ramp 实测（TXEN 之后统计，不影响时序）：
-     * late = busy-wait 退出相对目标时刻的迟到量；
-     * ramp = TXEN→EVENTS_READY（发射机启动真值，LEAD 该配成 150-ramp）。 */
-    {
-        uint32_t late = (uint32_t)(t_txen - (rx_end_us + TURNAROUND_LEAD_US));
-        if (late < g_tifs_late_min) g_tifs_late_min = late;
-        if (late > g_tifs_late_max) g_tifs_late_max = late;
-        while (NRF_RADIO_S->EVENTS_READY == 0) {
-        }
-        uint32_t ramp = (uint32_t)(time_now_us() - t_txen);
-        if (ramp < g_ramp_min) g_ramp_min = ramp;
-        if (ramp > g_ramp_max) g_ramp_max = ramp;
     }
 
     uint64_t tw = time_now_us();
@@ -206,6 +245,12 @@ int radio_reply_at(const uint8_t *pkt, uint32_t len, uint64_t rx_end_us)
             radio_disable();
             return 0;
         }
+    }
+    NRF_RADIO_S->SUBSCRIBE_TXEN = 0;   /* 一次性：防我们 TX 的 PHYEND 重触发 */
+    {   /* 全程实测 rx_end→tx_end（借 ramp 统计槽;空包预期 ≈231us） */
+        uint32_t gap = (uint32_t)(time_now_us() - rx_end_us);
+        if (gap < g_ramp_min) g_ramp_min = gap;
+        if (gap > g_ramp_max) g_ramp_max = gap;
     }
     return 1;
 }
@@ -238,36 +283,29 @@ void radio_rx_arm(uint8_t *pkt, uint32_t maxlen)
 
 int radio_reply_arm(const uint8_t *pkt, uint32_t len, uint64_t rx_end_us)
 {
-    (void)len;
-    /* 调用方处于 RX 完成回调（DISABLED 已发生并被 ISR 清除），radio 空闲。 */
-    NRF_RADIO_S->PACKETPTR = (uint32_t)pkt;
-    if ((int64_t)((rx_end_us + TURNAROUND_LEAD_US + TURNAROUND_SLACK_US) - time_now_us()) < 0) {
-        radio_disable();                     /* 宁缺毋晚（同 radio_reply_at） */
+    (void)len; (void)rx_end_us;
+    /* 调用方处于 RX 完成回调（DISABLED 已发生并被 ISR 清除），radio 空闲。
+     * TXEN 由硬件 T_IFS 在 CC 时刻触发；TX 完成走 DISABLED IRQ（ISR 里撤
+     * 订阅）。 */
+    if (!tifs_hw_arm(pkt)) {
         return 0;
     }
-    while ((int64_t)((rx_end_us + TURNAROUND_LEAD_US) - time_now_us()) > 0) {
-    }
-    NRF_RADIO_S->TASKS_TXEN = 1;
-    /* busy-wait 与 TXEN 之间禁止插任何代码（见 radio_reply_at 注释） */
-    uint64_t t_txen = time_now_us();
-    {
-        uint32_t late = (uint32_t)(t_txen - (rx_end_us + TURNAROUND_LEAD_US));
-        if (late < g_tifs_late_min) g_tifs_late_min = late;
-        if (late > g_tifs_late_max) g_tifs_late_max = late;
-    }
-    s_amode = AMODE_TX;                      /* TX 完成走 DISABLED IRQ */
+    s_amode = AMODE_TX;
     return 1;
 }
 
 void RADIO_0_IRQHandler(void)
 {
+    /* 进门先取时间戳再分发：PHYEND 时刻是 T_IFS 的基准，晚读 2-3us 就会把
+     * 回复推出安卓的接收窗口（同步引擎的紧轮询滞后 ~1us，这里要对齐）。 */
+    uint64_t t_now = time_now_us();
     if (NRF_RADIO_S->EVENTS_ADDRESS) {
         NRF_RADIO_S->EVENTS_ADDRESS = 0;
-        s_t_addr = time_now_us();            /* RX：锚点时间戳（TX 时无害覆盖） */
+        s_t_addr = t_now;                    /* RX：锚点时间戳（TX 时无害覆盖） */
     }
     if (NRF_RADIO_S->EVENTS_PHYEND) {
         NRF_RADIO_S->EVENTS_PHYEND = 0;
-        s_t_end = time_now_us();             /* RX：包尾时间戳（T_IFS 基准） */
+        s_t_end = t_now;                     /* RX：包尾时间戳（T_IFS 基准） */
     }
     if (NRF_RADIO_S->EVENTS_DISABLED) {
         NRF_RADIO_S->EVENTS_DISABLED = 0;
@@ -283,6 +321,7 @@ void RADIO_0_IRQHandler(void)
             s_amode = AMODE_IDLE;            /* 回调内 reply_arm 可切到 TX */
             if (s_evt_cb) s_evt_cb(1, s_t_addr, s_t_end, crc_ok);
         } else if (mode == AMODE_TX) {
+            NRF_RADIO_S->SUBSCRIBE_TXEN = 0;   /* 一次性硬件 T_IFS 撤订阅 */
             NRF_RADIO_S->INTENCLR00 = AIRQ_MASK;
             s_amode = AMODE_IDLE;
             if (s_evt_cb) s_evt_cb(0, 0, 0, 0);

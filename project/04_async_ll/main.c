@@ -23,6 +23,7 @@
 #include "radio.h"
 #include "ll.h"
 #include "gatt.h"
+#include "proto.h"
 #include "log.h"
 
 /* ---------------------------------------------------------------- LED -- */
@@ -41,7 +42,181 @@ static uint32_t rng_next(void)
     rng_state = x; return x;
 }
 
-static const uint8_t OUR_ADDR[6] = { 0xA0, 0xB0, 0xC0, 0xD0, 0xE0, 0xF0 };
+/* F2:E0:D0:C0:B0:A0（与 05_proto 一致）：曾用旧地址被 iOS 系统级
+ * 自动回连无限占线（占线期不广播=谁都扫不到）,换地址甩掉。 */
+static const uint8_t OUR_ADDR[6] = { 0xA0, 0xB0, 0xC0, 0xD0, 0xE0, 0xF2 };
+
+/* ---------------------------------- 应用协议（与 05_proto 同款接线；
+ * 区别：这里所有 proto 回调都运行在 RADIO IRQ 上下文——构建超过回复
+ * 预算时 radio_reply_arm 放弃本事件、pend 队列下事件秒回） -- */
+#define NOTIFY_SLOTS 4u
+#define NOTIFY_FRAME_MAX 248u
+static uint8_t  nq_buf[NOTIFY_SLOTS][NOTIFY_FRAME_MAX];
+static uint16_t nq_len[NOTIFY_SLOTS];
+static uint8_t  nq_head, nq_tail, nq_count;
+static uint32_t nq_dropped;
+
+static void nq_push(const uint8_t *frag, uint32_t len)
+{
+    if (len > NOTIFY_FRAME_MAX || nq_count == NOTIFY_SLOTS) {
+        nq_dropped++;
+        return;
+    }
+    for (uint32_t i = 0; i < len; i++) nq_buf[nq_tail][i] = frag[i];
+    nq_len[nq_tail] = (uint16_t)len;
+    nq_tail = (uint8_t)((nq_tail + 1u) % NOTIFY_SLOTS);
+    nq_count++;
+}
+
+/* ATT Handle Value Notification 包装（0x1B + 柄 + proto 帧）；订阅前不发 */
+static uint32_t att_notify_pull(uint8_t *out, uint32_t max)
+{
+    if (nq_count == 0u || !gatt_notify_enabled()) {
+        return 0;
+    }
+    uint32_t n = nq_len[nq_head];
+    if (3u + n > max) {
+        return 0;
+    }
+    out[0] = 0x1Bu;
+    out[1] = (uint8_t)GATT_FFF1_VAL_HANDLE;
+    out[2] = (uint8_t)(GATT_FFF1_VAL_HANDLE >> 8);
+    for (uint32_t i = 0; i < n; i++) out[3u + i] = nq_buf[nq_head][i];
+    nq_head = (uint8_t)((nq_head + 1u) % NOTIFY_SLOTS);
+    nq_count--;
+    return 3u + n;
+}
+
+static void proto_send_cb(const uint8_t *frag, uint32_t len, void *arg)
+{
+    (void)arg;
+    nq_push(frag, len);
+}
+static uint32_t proto_mtu_cb(void) { return 244u; }
+
+static uint8_t  bat_val[4];
+static uint8_t  time_val[6];
+static const uint8_t dev_val[] = { 0, 1, 0, 1, '5', '4', 'L' };
+static uint8_t  up_val[4];
+static uint8_t  stat_val[4];
+static int64_t  epoch_offset_us;
+
+static uint8_t fw_msg_id;
+static uint8_t pending_report_id = 0xFFu;
+static uint64_t report_deadline_us;
+static uint32_t report_retries;
+static uint8_t last_set_id = 0xFFu;
+
+static void put_be16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)(v >> 8); p[1] = (uint8_t)v; }
+static void put_be32(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16);
+    p[2] = (uint8_t)(v >> 8);  p[3] = (uint8_t)v;
+}
+
+static void fill_fields(void)
+{
+    bat_val[0] = 85u;
+    put_be16(bat_val + 1, 3600u);
+    bat_val[3] = 0u;
+    uint64_t epoch_us = (uint64_t)time_now_us() + (uint64_t)epoch_offset_us;
+    put_be32(time_val, (uint32_t)(epoch_us / 1000000u));
+    put_be16(time_val + 4, 480u);
+    put_be32(up_val, (uint32_t)(time_now_us() / 1000000u));
+    put_be32(stat_val, 1u);
+}
+
+static void proto_send_full_report(uint8_t msg_id)
+{
+    fill_fields();
+    proto_tlv_t tlvs[5] = {
+        { PROTO_T_BATTERY,  4, bat_val },
+        { PROTO_T_TIME,     6, time_val },
+        { PROTO_T_DEV_INFO, (uint8_t)sizeof(dev_val), dev_val },
+        { PROTO_T_UPTIME,   4, up_val },
+        { PROTO_T_STATUS,   4, stat_val },
+    };
+    proto_report(tlvs, 5, msg_id, 1);
+    pending_report_id = msg_id;
+    report_deadline_us = time_now_us() + 500000u;
+}
+
+static void on_get_cb(const uint8_t *types, uint32_t n, uint8_t msg_id)
+{
+    (void)types; (void)n;
+    report_retries = 0;
+    proto_send_full_report(fw_msg_id++);
+    log_printf("[proto] GET id=%u -> full report\n", msg_id);
+}
+
+static void on_set_cb(const proto_tlv_t *tlvs, uint32_t n, uint8_t msg_id)
+{
+    if (msg_id == last_set_id) {
+        proto_ack(0u, msg_id);
+        log_printf("[proto] SET id=%u dup, re-ack\n", msg_id);
+        return;
+    }
+    last_set_id = msg_id;
+    uint8_t err = 1u;
+    for (uint32_t i = 0; i < n; i++) {
+        if (tlvs[i].t == PROTO_T_TIME && tlvs[i].l == 6u) {
+            uint32_t epoch = ((uint32_t)tlvs[i].v[0] << 24) |
+                             ((uint32_t)tlvs[i].v[1] << 16) |
+                             ((uint32_t)tlvs[i].v[2] << 8)  | tlvs[i].v[3];
+            epoch_offset_us = (int64_t)epoch * 1000000LL -
+                              (int64_t)time_now_us();
+            err = 0u;
+        }
+    }
+    proto_ack(err, msg_id);
+    log_printf("[proto] SET n=%u err=%u\n", n, err);
+}
+
+static void on_ack_cb(uint8_t err, uint8_t msg_id)
+{
+    if (msg_id == pending_report_id) {
+        pending_report_id = 0xFFu;
+        report_retries = 0;
+        log_printf("[proto] report %u acked err=%u\n", msg_id, err);
+    }
+}
+
+static proto_ops_t proto_ops_ = {
+    .send = proto_send_cb,
+    .mtu_get = proto_mtu_cb,
+    .arg = 0,
+    .on_get = on_get_cb,
+    .on_set = on_set_cb,
+    .on_report = 0,
+    .on_ack = on_ack_cb,
+};
+
+static uint32_t att_write_cb(uint16_t handle, const uint8_t *val, uint32_t len,
+                             void *arg)
+{
+    (void)arg;
+    if (handle == GATT_FFF1_VAL_HANDLE) {
+        proto_feed(val, len);
+    }
+    return 0;
+}
+
+/* 连接事件钩子（IRQ）：ACK_REQ REPORT 超时重发，3 次未确认上抛 */
+static void on_conn_event_cb(uint32_t counter, int crc_ok, uint32_t ch)
+{
+    (void)counter; (void)crc_ok; (void)ch;
+    if (pending_report_id != 0xFFu && time_now_us() > report_deadline_us) {
+        if (report_retries >= 3u) {
+            log_printf("[proto] report %u unacked after %u retries\n",
+                       pending_report_id, report_retries);
+            pending_report_id = 0xFFu;
+            return;
+        }
+        proto_send_full_report(pending_report_id);
+        report_retries++;
+        log_puts("[proto] report retry\n");
+    }
+}
 
 /* ------------------------------------------ 异步引擎的 IRQ 桥接 -- */
 static volatile int g_connected;
@@ -77,6 +252,8 @@ static const ll_ops_t OPS = {
     .mtu_get    = gatt_dbg_mtu,
     .txoct_get  = gatt_dbg_txoct,
     .led        = led_set,
+    .on_conn_event   = on_conn_event_cb,
+    .att_notify_pull = att_notify_pull,
     /* 异步能力（04 的主角） */
     .alarm_set      = time_alarm_set,
     .alarm_cancel   = time_alarm_cancel,
@@ -104,6 +281,8 @@ int main(void)
     radio_init();
     radio_irq_init(radio_evt_trampoline);
     gatt_init();
+    gatt_set_write_cb(att_write_cb, 0);
+    proto_init(&proto_ops_);
     ll_init(OUR_ADDR);
 
     rng_state = (uint32_t)time_now_us() | 1u;
@@ -165,9 +344,16 @@ int main(void)
             continue;
         }
 
-        if ((++adv_events & 127u) == 0)
-            log_printf("[adv] events=%u rx_ok=%u rx_err=%u sreq=%u srsp=%u\n",
-                       adv_events, ast.rx_ok, ast.rx_err, ast.scan_req, ast.scan_rsp);
+        if ((++adv_events & 127u) == 0) {
+            uint32_t lmin, lmax, rmin, rmax;
+            radio_dbg_tifs(&lmin, &lmax, &rmin, &rmax);
+            log_printf("[adv] events=%u rx_ok=%u rx_err=%u sreq=%u srsp=%u"
+                       " late=%u..%u ramp=%u..%u scanner=%02x%02x%02x%02x%02x%02x\n",
+                       adv_events, ast.rx_ok, ast.rx_err, ast.scan_req, ast.scan_rsp,
+                       lmin, lmax, rmin, rmax,
+                       ast.scan_addr[5], ast.scan_addr[4], ast.scan_addr[3],
+                       ast.scan_addr[2], ast.scan_addr[1], ast.scan_addr[0]);
+        }
 
         time_delay_us(20000u + (rng_next() % 10000u));
     }

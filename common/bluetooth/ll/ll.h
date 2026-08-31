@@ -40,6 +40,9 @@ typedef struct {
     uint8_t  rxpdu[6][32];         /* 最近的 LL control / 非空 PDU 环形缓冲 */
     uint8_t  txhdr[6];             /* 对应事件我们回复的头字节（SN/NESN 对账） */
     uint16_t rxevt[6];             /* 对应事件的 connEventCounter */
+    /* 逐事件踪迹环（最近 64 事件）：[0]=counter 低 8 位,[1]=收包头
+     * （0xFF=miss）,[2]=我们的回复头（0xFF=未发）,[3]=信道号 */
+    uint8_t  evtrace[64][4];
 } ll_stats_t;
 
 /* 广播统计（跨 sweep 累计；adv 间隔与打印留 main 循环） */
@@ -47,6 +50,7 @@ typedef struct {
     uint32_t rx_ok, rx_err;
     uint32_t scan_req;             /* 定向到我们的 SCAN_REQ */
     uint32_t scan_rsp;             /* SCAN_RSP 按时发出（radio_reply_at 成功） */
+    uint8_t  scan_addr[6];         /* 最近一个 SCAN_REQ 的 ScanA（定责用） */
 } ll_adv_stats_t;
 
 typedef struct ll_ops {

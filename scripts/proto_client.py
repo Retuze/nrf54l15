@@ -19,7 +19,7 @@ import time
 from bleak import BleakScanner, BleakClient
 
 TARGET_NAME = "54L-GATT"
-TARGET_ADDR = "F0:E0:D0:C0:B0:A0"
+TARGET_ADDR = "F2:E0:D0:C0:B0:A0"
 CHAR_FFF1 = "0000fff1-0000-1000-8000-00805f9b34fb"
 
 TYPE_GET_REQ = 0x0001
