@@ -1,9 +1,10 @@
 /*
  * RADIO driver for nRF54L15, bare metal, BLE 1Mbit.
  *
- * 物理时序封装在本驱动：nRF54L 没有硬件 TIFS 回转，T_IFS 软件时序
- * （TURNAROUND_LEAD_US 校准值）在 radio.c 内，协议层（common/ll）不出现
- * 任何时序常量。窗口超时与回复定时依赖 time 驱动。
+ * 物理时序封装在本驱动：nRF54L 没有硬件 TIFS 自动回转，本驱动用
+ * DPPI+TIMER10 搭了一套（PHYEND→清零重计,COMPARE→TXEN,±62.5ns 抖动;
+ * 触发点常量 TIFS_CC_US 在 radio.c,推导见其注释与 README"RF 三大必修
+ * 课"）。协议层（common/ll）不出现任何时序常量。
  *
  * 无包缓冲：PACKETPTR 直接指调用方缓冲（必须在 RAM）。
  * 已知限制（沿袭自 01_conn 原实现）：PHYEND 等待无超时——本应收到包却
@@ -33,9 +34,10 @@ int radio_tx(const uint8_t *pkt, uint32_t len, uint32_t timeout_us);
 int radio_rx(uint8_t *pkt, uint32_t maxlen, uint32_t window_us,
              uint64_t *t_addr_us, uint64_t *t_end_us, int *crc_ok);
 
-/* 软件 T_IFS 回复：等 RX 通道 DISABLED → 装包 → 忙等到 (rx_end + LEAD) →
- * TXEN → 等 DISABLED（3ms 上限，容 251 字节 DLE ≈ 2.1ms）。
- * 返回 1 = 发送完成（radio 已停），0 = 超时（内部已 disable）。 */
+/* 硬件 T_IFS 回复：等 RX 通道 DISABLED → 装包 → 装 DPPI 订阅（TXEN 由
+ * TIMER10 比较在精确时刻触发）→ 等 DISABLED（3ms 上限，容 251 字节 DLE
+ * ≈ 2.1ms）。构建超过触发点则放弃返回 0（宁缺毋晚）。
+ * 返回 1 = 发送完成（radio 已停），0 = 放弃/超时（内部已 disable）。 */
 int radio_reply_at(const uint8_t *pkt, uint32_t len, uint64_t rx_end_us);
 
 /* 关 radio（清 SHORTS → TASKS_DISABLE → 等 DISABLED）。 */
@@ -64,9 +66,10 @@ void radio_irq_init(radio_evt_cb_t cb);
  * 超时路径调 radio_disable() 撤收。 */
 void radio_rx_arm(uint8_t *pkt, uint32_t maxlen);
 
-/* T_IFS 定时回复（非阻塞版 radio_reply_at）：装包 → 忙等到 (rx_end+LEAD)
- * → TXEN 后立即返回 1；发送完成经 IRQ 回调 cb(is_rx=0)。构建已超时则
- * 返回 0（radio 已撤收，不发迟到包）。须在 RX 回调上下文内调用。 */
+/* 硬件 T_IFS 定时回复（非阻塞版 radio_reply_at）：装包 + 装 DPPI 订阅后
+ * 立即返回 1（TXEN 由硬件到点触发）；发送完成经 IRQ 回调 cb(is_rx=0)。
+ * 构建已超触发点则返回 0（radio 已撤收，不发迟到包）。须在 RX 回调
+ * 上下文内调用。 */
 int radio_reply_arm(const uint8_t *pkt, uint32_t len, uint64_t rx_end_us);
 
 #endif /* RADIO_H */

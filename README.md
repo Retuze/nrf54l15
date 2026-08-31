@@ -25,9 +25,10 @@ nrf54l15/
 │                            # 无 libc 路线）；换芯片 = 加一个 targets/<名字>.cmake
 ├── boards/           # 板库：xiao_nrf54l15.h（板级硬件事实；换板 = main.c 换 include）
 ├── common/           # 平台无关协议库（不 include 任何 54L 寄存器，底层能力走注入）
-│   ├── bluetooth/           # gatt/：ATT/GATT 服务端（纯协议，host 可单测）
+│   ├── bluetooth/           # gatt/：ATT/GATT 服务端 + 主动 MTU 交换（纯协议，host 可单测）
 │   │                       # ll/：BLE 链路层（广播/CONNECT_IND/CSA#1/LL control/
-│   │                       #      连接状态机；全部经 ll_ops_t 注入，host 可单测）
+│   │                       #      连接状态机,同步+异步双引擎共享协议核;sched 调度器
+│   │                       #      雏形;scan 被动扫描——全经 ll_ops_t 注入,host 可单测）
 │   ├── ring/                # SPSC 字节环形缓冲（ISR put / 主循环 get，无锁）
 │   ├── log/                 # 实时日志：格式化 + log_sink 注入（目标机=uart 异步
 │   │                        #   TX，宿主测试=fake；不改 printf 阻塞路径）
@@ -46,8 +47,8 @@ nrf54l15/
 │   │                        #   uart_tx 入队即返 + uart_tx_wait 主动排空——阻塞是
 │   │                        #   console 层的组合；RX DMA 按满/空闲成块投递）
 │   └── console/             # stdio 落点 + 默认 log sink（printf 仅 HardFault 用）
-│   ├── radio/               # RADIO 寄存器驱动 + T_IFS 软件时序封装（LEAD 校准在驱动内）
-│   └── clock/               # clock_hfxo_start()
+│   ├── radio/               # RADIO 寄存器驱动 + 硬件 T_IFS（DPPI+TIMER10）+ 异步 IRQ API
+│   └── clock/               # HFXO 起振 + XOTUNE 调谐/周期重调谐
 ├── project/          # 实验工程目录，每个实验一个子目录
 │   └── 01_conn/             # 实验 01：BLE 连接 + ATT/GATT（当前）
 │       ├── main.c  CMakeLists.txt     # main 只做驱动 init + ll_ops 接线 + 打印

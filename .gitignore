@@ -9,3 +9,9 @@ compile_commands.json
 scripts/serial.log
 scripts/_*.bin
 *.bin
+
+# 旁支实验（libopus 移植,含源码树与构建产物,未纳管）
+/common/opus/
+
+# RTT/串口历史日志
+/logs/
